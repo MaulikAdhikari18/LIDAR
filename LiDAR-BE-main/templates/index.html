@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Adaptive LiDAR Backend</title></head>
+<body>
+<h1>Adaptive Variable-Resolution 2.5D LiDAR</h1>
+<p>Backend API is running. Use <code>POST /api/frame</code> to process a synthetic frame.</p>
+<pre id="out"></pre>
+<script>
+async function nextFrame(){
+  const r = await fetch('/api/frame',{method:'POST'});
+  document.getElementById('out').textContent =
+    JSON.stringify(await r.json(), null, 2);
+}
+setInterval(nextFrame, 1000);
+nextFrame();
+</script>
+</body>
+</html>
