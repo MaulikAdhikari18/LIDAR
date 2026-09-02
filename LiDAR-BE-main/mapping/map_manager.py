@@ -10,9 +10,12 @@ class MapManager:
         self._last_release = 0.0
         self._last_consumption = 0.0
 
-    def update_observations(self, observations):
+    def update_observations(self, observations, frame_id=None):
         for obs in observations:
-            cell = self.tree.get_or_create(obs["x"], obs["y"])
+            # Route to whichever node currently represents this location --
+            # the root if it's still coarse, or the live descendant cell if
+            # it's been refined -- instead of always writing into the root.
+            cell = self.tree.locate_cell(obs["x"], obs["y"])
             if cell.region_id not in self.active_ids:
                 self.active_ids.add(cell.region_id)
                 cell.active = True
@@ -26,6 +29,8 @@ class MapManager:
                 elif k in obs:
                     setattr(cell, k, obs[k])
             cell.confidence = max(0.05, 1.0 - cell.uncertainty)
+            if frame_id is not None:
+                cell.last_seen_frame = frame_id
 
     def update_future_signal(self, future):
         for cell in self.active_regions():
@@ -80,6 +85,7 @@ class MapManager:
                     c.geometry = region.geometry
                     c.distance_relevance = region.distance_relevance
                     c.future_probability = region.future_probability
+                    c.last_seen_frame = region.last_seen_frame
                     c.active_cost = self.cell_base_cost(new)
                     self.active_ids.add(c.region_id)
                     child_cost += c.active_cost
@@ -90,14 +96,17 @@ class MapManager:
             else:  # coarsen
                 child_ids = list(region.children)
                 release = 0.0
+                newest_seen = region.last_seen_frame
                 for cid in child_ids:
                     c = self.tree.nodes.get(cid)
                     if c and c.active:
                         c.active = False
                         self.active_ids.discard(cid)
                         release += c.active_cost
+                        newest_seen = max(newest_seen, c.last_seen_frame)
                 region.active = True
                 self.active_ids.add(region.region_id)
+                region.last_seen_frame = newest_seen
                 region.resolution = new
                 region.active_cost = self.cell_base_cost(new)
                 self.active_cost += region.active_cost - release
@@ -115,6 +124,40 @@ class MapManager:
             }
             applied.append(rec)
         return applied
+
+    def decay_stale_cells(self, frame_id, max_stale_frames):
+        """Deactivate active cells that haven't received an observation in
+        `max_stale_frames` frames (e.g. an object left the sensor's view).
+        Releases their budget and clears their occupancy/semantic state so
+        they don't linger as phantom detections, and so that if the same
+        cell becomes active again later it starts from a clean state
+        instead of resurrecting old data.
+
+        Returns the list of region_ids that were released this frame.
+        """
+        if not max_stale_frames or max_stale_frames <= 0:
+            return []
+        released = []
+        for cell in self.active_regions():
+            if cell.last_seen_frame < 0:
+                continue  # never actually observed; leave alone
+            if frame_id - cell.last_seen_frame < max_stale_frames:
+                continue
+            self.active_ids.discard(cell.region_id)
+            cell.active = False
+            self.active_cost = max(0.0, self.active_cost - cell.active_cost)
+            cell.active_cost = 0.0
+            cell.occupancy = 0.0
+            cell.semantic_class = "unknown"
+            cell.semantic_importance = 0.0
+            cell.motion = 0.0
+            cell.uncertainty = 0.5
+            cell.geometry = 0.0
+            cell.distance_relevance = 0.0
+            cell.future_probability = 0.0
+            cell.confidence = 0.5
+            released.append(cell.region_id)
+        return released
 
     def reclaim_resources(self):
         self.active_cost = max(0.0, self.active_cost)

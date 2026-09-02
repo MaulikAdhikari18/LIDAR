@@ -22,6 +22,7 @@ class Cell:
     distance_relevance: float = 0.0
     future_probability: float = 0.0
     last_action_frame: int = -9999
+    last_seen_frame: int = -9999
     active_cost: float = 0.0
 
     def distance(self):

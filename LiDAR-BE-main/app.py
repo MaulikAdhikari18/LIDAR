@@ -49,6 +49,7 @@ class ConfigUpdate(BaseModel):
     wP: float | None = None
     refine_threshold: float | None = None
     coarsen_threshold: float | None = None
+    max_stale_frames: int | None = None
 
 @app.get("/")
 def root():

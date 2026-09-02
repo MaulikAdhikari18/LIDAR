@@ -37,7 +37,8 @@ class AdaptiveController:
             points = preprocess(lidar_frame, self.config)
             scene = perceive(points, lidar_frame.get("objects", []), self.config)
 
-        self.map.update_observations(scene["regions"])
+        self.map.update_observations(scene["regions"], frame_id)
+        decayed = self.map.decay_stale_cells(frame_id, self.config.max_stale_frames)
         tracks = self.tracker.update(scene["dynamic_objects"])
         future = self.predictor.predict(tracks, self.config.prediction_horizon)
         self.map.update_future_signal(future)
@@ -77,6 +78,7 @@ class AdaptiveController:
             "fps": 1.0 / elapsed if elapsed else 0,
             "points_processed": len(points),
             "active_cells": self.map.active_cell_count(),
+            "decayed_cells": len(decayed),
             "fine_cells": self.map.count_resolution(self.config.resolution_levels[-1]),
             "medium_cells": self.map.count_resolution(self.config.resolution_levels[-2]),
             "coarse_cells": self.map.count_resolution(self.config.resolution_levels[0]),

@@ -26,6 +26,7 @@ class Config:
     refine_threshold: float = 0.55
     coarsen_threshold: float = 0.25
     min_dwell_frames: int = 2
+    max_stale_frames: int = 5  # frames an active cell may go unobserved before it decays
 
     # Cost model
     k_compute: float = 0.20
