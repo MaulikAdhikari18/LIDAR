@@ -317,6 +317,8 @@ export default function App() {
         fps={fps}
         frameNumber={frameNumber}
         onNavigate={setActivePage}
+        dataSource={dataSource}
+        liveStatus={liveStatus}
       />
 
       <main className="pt-4">

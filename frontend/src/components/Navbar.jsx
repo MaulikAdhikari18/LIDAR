@@ -1,7 +1,34 @@
 import { Activity, Cpu, Gauge, RadioTower } from "lucide-react";
 import { NAV_ITEMS } from "../data/simulationData.js";
 
-export default function Navbar({ activePage, computeUsage, fps, frameNumber, onNavigate }) {
+// Mirrors the status states LiveStatusPanel and the top-bar pill already use,
+// so the navbar can't say something different from the rest of the page.
+// Previously this badge was hardcoded to a green "System Online" regardless
+// of dataSource/liveStatus, and fps/computeUsage fell back to the simulated
+// sine-wave numbers whenever the live poll had no data (connecting, error,
+// or empty) -- so a genuinely unreachable backend still showed a healthy
+// green "System Online · 55 FPS · 94% Compute" in the header, while the
+// panel below it correctly said "Live backend unreachable". On stage the
+// header is the thing people glance at, so it has to agree with reality.
+const STATUS_COPY = {
+  simulated: { label: "Simulated Demo", dotClass: "bg-sky-400 shadow-[0_0_14px_rgba(56,189,248,0.85)]", textClass: "text-sky-300" },
+  live: { label: "System Online", dotClass: "bg-stable shadow-[0_0_14px_rgba(34,197,94,0.85)]", textClass: "text-emerald-300" },
+  connecting: { label: "Connecting…", dotClass: "bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.85)]", textClass: "text-amber-300" },
+  empty: { label: "No Regions", dotClass: "bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.85)]", textClass: "text-amber-300" },
+  error: { label: "Backend Unreachable", dotClass: "bg-rose-500 shadow-[0_0_14px_rgba(244,63,94,0.85)]", textClass: "text-rose-400" },
+};
+
+export default function Navbar({ activePage, computeUsage, fps, frameNumber, onNavigate, dataSource = "simulated", liveStatus = "idle" }) {
+  // dataSource=simulated ignores liveStatus entirely (it's leftover state
+  // from a previous Live session); dataSource=live maps liveStatus's
+  // "idle" (not yet polled) onto the same "connecting" copy.
+  const statusKey = dataSource === "simulated" ? "simulated" : liveStatus === "idle" ? "connecting" : liveStatus;
+  const { label, dotClass, textClass } = STATUS_COPY[statusKey] ?? STATUS_COPY.connecting;
+  // Only trust fps/computeUsage as real system stats when actually live;
+  // otherwise they're the simulation's invented numbers and showing them
+  // next to "Backend Unreachable" would still look like telemetry.
+  const showMetrics = statusKey === "live" || statusKey === "simulated";
+
   return (
     <header className="grid gap-4 rounded-lg border border-line bg-black/45 px-4 py-3 shadow-panel backdrop-blur-xl xl:grid-cols-[1fr_auto_1fr] xl:items-center">
       <div>
@@ -23,14 +50,20 @@ export default function Navbar({ activePage, computeUsage, fps, frameNumber, onN
       </nav>
 
       <div className="flex flex-wrap items-center gap-3 text-xs font-bold uppercase tracking-[0.12em] text-slate-300 xl:justify-end">
-        <span className="flex items-center gap-2 text-emerald-300">
-          <span className="h-2.5 w-2.5 rounded-full bg-stable shadow-[0_0_14px_rgba(34,197,94,0.85)]" />
-          System Online
+        <span className={`flex items-center gap-2 ${textClass}`}>
+          <span className={`h-2.5 w-2.5 rounded-full ${dotClass}`} />
+          {label}
         </span>
-        <span className="flex items-center gap-1"><Gauge size={14} /> {fps} FPS</span>
-        <span className="flex items-center gap-1"><RadioTower size={14} /> Frame {frameNumber}</span>
-        <span className="flex items-center gap-1"><Cpu size={14} /> {computeUsage}% Compute</span>
-        <span className="flex items-center gap-1"><Activity size={14} /> Live</span>
+        {showMetrics ? (
+          <>
+            <span className="flex items-center gap-1"><Gauge size={14} /> {fps} FPS</span>
+            <span className="flex items-center gap-1"><RadioTower size={14} /> Frame {frameNumber}</span>
+            <span className="flex items-center gap-1"><Cpu size={14} /> {computeUsage}% Compute</span>
+            <span className="flex items-center gap-1"><Activity size={14} /> {dataSource === "live" ? "Live" : "Simulated"}</span>
+          </>
+        ) : (
+          <span className="flex items-center gap-1 text-slate-500"><RadioTower size={14} /> No telemetry</span>
+        )}
       </div>
     </header>
   );
