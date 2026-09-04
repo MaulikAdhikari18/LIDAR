@@ -1,17 +1,14 @@
 import AdaptiveMap from "../components/AdaptiveMap.jsx";
-import BackendConfigCard from "../components/BackendConfigCard.jsx";
 import BudgetPanel from "../components/BudgetPanel.jsx";
-import PlaybackCard from "../components/PlaybackCard.jsx";
+import LiveLidarScene from "../components/LiveLidarScene.jsx";
 import RegionInspector from "../components/RegionInspector.jsx";
-import ResolutionTiersCard from "../components/ResolutionTiersCard.jsx";
 import UtilityEngine from "../components/UtilityEngine.jsx";
 
 export default function LiveSystem({
   budgetTotal,
   budgetUsed,
   controls,
-  dataSource,
-  onStep,
+  isLive,
   regions,
   resolutionLevels,
   selectedRegion,
@@ -19,17 +16,19 @@ export default function LiveSystem({
   resetSimulation,
   setControls,
   setSelectedRegionId,
-  isLive,
+  time,
 }) {
   return (
-    <main className="grid flex-1 grid-cols-1 gap-3.5 lg:grid-cols-12" data-purpose="dashboard-content">
-      <aside className="flex flex-col space-y-3 lg:col-span-3">
-        <PlaybackCard controls={controls} onReset={resetSimulation} onStep={onStep} setControls={setControls} />
-        <ResolutionTiersCard resolutionLevels={resolutionLevels} />
-        <BackendConfigCard dataSource={dataSource} />
-      </aside>
-
-      <div className="lg:col-span-6">
+    <section className="grid gap-4 xl:grid-cols-[1.05fr_1.15fr_390px]">
+      <LiveLidarScene
+        controls={controls}
+        resetSimulation={resetSimulation}
+        regions={regions}
+        setControls={setControls}
+        setSelectedRegionId={setSelectedRegionId}
+        time={time}
+      />
+      <div className="space-y-4">
         <AdaptiveMap
           onSelectRegion={setSelectedRegionId}
           predictionEnabled={controls.showPrediction}
@@ -37,13 +36,19 @@ export default function LiveSystem({
           resolutionLevels={resolutionLevels}
           selectedRegionId={selectedRegionId}
         />
-      </div>
-
-      <aside className="flex flex-col space-y-3 lg:col-span-3">
-        <BudgetPanel budgetTotal={budgetTotal} budgetUsed={budgetUsed} isLive={isLive} />
-        <UtilityEngine onSelectRegion={setSelectedRegionId} regions={regions} selectedRegionId={selectedRegionId} />
         <RegionInspector region={selectedRegion} />
+      </div>
+      <aside className="space-y-4">
+        <BudgetPanel
+          budgetTotal={budgetTotal}
+          budgetUsed={budgetUsed}
+          isLive={isLive}
+          onSelectRegion={setSelectedRegionId}
+          regions={regions}
+          selectedRegionId={selectedRegionId}
+        />
+        <UtilityEngine region={selectedRegion} />
       </aside>
-    </main>
+    </section>
   );
 }

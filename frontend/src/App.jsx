@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Navbar from "./components/Navbar.jsx";
 import LiveStatusPanel from "./components/LiveStatusPanel.jsx";
-import SimpleDashboard from "./pages/SimpleDashboard.jsx";
 import LiveSystem from "./pages/LiveSystem.jsx";
 import Prediction from "./pages/Prediction.jsx";
 import BudgetAnalytics from "./pages/BudgetAnalytics.jsx";
@@ -37,10 +36,7 @@ const LIVE_HISTORY_LENGTH = 40;
 const SIMULATED_THRESHOLDS = { refine: 1.8, coarsen: 1.08 };
 
 export default function App() {
-  // Opens on the simplified demo view -- the one built for narrating the
-  // pitch out loud -- rather than the dense Live System page. The detailed
-  // pages are one nav click away for follow-up questions.
-  const [activePage, setActivePage] = useState("demo");
+  const [activePage, setActivePage] = useState("live");
   const [time, setTime] = useState(0);
   const [frameNumber, setFrameNumber] = useState(4128);
   const [selectedRegionId, setSelectedRegionId] = useState("pedestrian");
@@ -271,61 +267,49 @@ export default function App() {
     budgetUsed,
     thresholds,
     resolutionLevels,
-    // The demo dashboard has its own header (mode pill, frame, budget, and a
-    // toggle switch) so it needs the raw mode state, not just the derived
-    // `isLive` boolean the other pages use.
-    dataSource,
-    setDataSource,
-    liveStatus,
   };
 
   const showLiveGate = dataSource === "live" && !isLive;
-  // The demo dashboard's own header already shows an equivalent status pill,
-  // frame counter, and backend toggle switch -- rendering the generic ones
-  // here too would put two toggles and two status readouts on screen at once.
-  const showGlobalToggleRow = activePage !== "demo";
 
   return (
     <div className="min-h-screen px-4 py-4 lg:px-6">
-      {showGlobalToggleRow && (
-        <div className="mb-3 flex items-center justify-end gap-2">
-          {dataSource === "live" && (
-            <span className="mr-auto flex items-center gap-2 text-xs font-bold">
-              <span
-                className={`h-2 w-2 rounded-full ${liveStatus === "live"
-                  ? "bg-emerald-400"
-                  : liveStatus === "error"
-                    ? "bg-rose-500"
-                    : "bg-amber-400"
-                  }`}
-              />
-              <span className={liveStatus === "live" ? "text-emerald-300" : liveStatus === "error" ? "text-rose-400" : "text-amber-300"}>
-                {liveStatus === "live"
-                  ? `LIVE · backend frame ${frameNumber}`
-                  : liveStatus === "error"
-                    ? "LIVE · backend unreachable"
-                    : liveStatus === "empty"
-                      ? "LIVE · backend responding, no regions"
-                      : "LIVE · connecting"}
-              </span>
+      <div className="mb-3 flex items-center justify-end gap-2">
+        {dataSource === "live" && (
+          <span className="mr-auto flex items-center gap-2 text-xs font-bold">
+            <span
+              className={`h-2 w-2 rounded-full ${liveStatus === "live"
+                ? "bg-emerald-400"
+                : liveStatus === "error"
+                  ? "bg-rose-500"
+                  : "bg-amber-400"
+                }`}
+            />
+            <span className={liveStatus === "live" ? "text-emerald-300" : liveStatus === "error" ? "text-rose-400" : "text-amber-300"}>
+              {liveStatus === "live"
+                ? `LIVE · backend frame ${frameNumber}`
+                : liveStatus === "error"
+                  ? "LIVE · backend unreachable"
+                  : liveStatus === "empty"
+                    ? "LIVE · backend responding, no regions"
+                    : "LIVE · connecting"}
             </span>
-          )}
-          <button
-            type="button"
-            className={`control-button ${dataSource === "simulated" ? "control-button-active" : ""}`}
-            onClick={() => setDataSource("simulated")}
-          >
-            Simulated Demo
-          </button>
-          <button
-            type="button"
-            className={`control-button ${dataSource === "live" ? "control-button-active" : ""}`}
-            onClick={() => setDataSource("live")}
-          >
-            Live Backend
-          </button>
-        </div>
-      )}
+          </span>
+        )}
+        <button
+          type="button"
+          className={`control-button ${dataSource === "simulated" ? "control-button-active" : ""}`}
+          onClick={() => setDataSource("simulated")}
+        >
+          Simulated Demo
+        </button>
+        <button
+          type="button"
+          className={`control-button ${dataSource === "live" ? "control-button-active" : ""}`}
+          onClick={() => setDataSource("live")}
+        >
+          Live Backend
+        </button>
+      </div>
 
       <Navbar
         activePage={activePage}
@@ -347,7 +331,6 @@ export default function App() {
           />
         ) : (
           <>
-            {activePage === "demo" && <SimpleDashboard {...sharedProps} />}
             {activePage === "live" && <LiveSystem {...sharedProps} />}
             {activePage === "prediction" && <Prediction {...sharedProps} />}
             {activePage === "budget" && <BudgetAnalytics {...sharedProps} />}
