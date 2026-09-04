@@ -117,6 +117,40 @@ export default function App() {
     return () => { cancelled = true; };
   }, [dataSource]);
 
+  // Extracted so a manual "Step" click and the auto-poll loop share one
+  // implementation instead of drifting apart. Fetches exactly one frame from
+  // the backend regardless of controls.running -- that's the point of a
+  // manual step control, it has to work while paused. `isStale` lets the
+  // auto-poll loop below discard a response that resolved after the effect
+  // that started it was torn down (e.g. the user switched back to Simulated
+  // mid-request); the manual step button has no such window to guard.
+  const fetchLiveFrame = useCallback(async (isStale = () => false) => {
+    const result = await advanceFrame();
+    if (isStale()) return;
+    const { regions, metrics } = adaptBackendFrame(result, liveConfigRef.current ?? FALLBACK_CONFIG);
+    setLiveRegions(regions);
+    setLiveMetrics(metrics);
+    setFrameNumber(result.frame_id);
+    setLiveError(null);
+    setLiveStatus(regions.length ? "live" : "empty");
+
+    if (metrics) {
+      setLiveHistory((current) => {
+        const next = [...current, {
+          label: `${metrics.frame_id}`,
+          frameId: metrics.frame_id,
+          Fine: metrics.fine_cells ?? 0,
+          Medium: metrics.medium_cells ?? 0,
+          Coarse: metrics.coarse_cells ?? 0,
+          activeCells: metrics.active_cells ?? 0,
+          used: Number((metrics.used_budget ?? 0).toFixed(2)),
+          budget: metrics.budget ?? 0,
+        }];
+        return next.slice(-LIVE_HISTORY_LENGTH);
+      });
+    }
+  }, []);
+
   // Poll the real backend, one frame at a time, while Live is selected.
   //
   // Chained setTimeout rather than setInterval: /api/frame MUTATES server state
@@ -131,30 +165,7 @@ export default function App() {
 
     const poll = async () => {
       try {
-        const result = await advanceFrame();
-        if (cancelled) return;
-        const { regions, metrics } = adaptBackendFrame(result, liveConfigRef.current ?? FALLBACK_CONFIG);
-        setLiveRegions(regions);
-        setLiveMetrics(metrics);
-        setFrameNumber(result.frame_id);
-        setLiveError(null);
-        setLiveStatus(regions.length ? "live" : "empty");
-
-        if (metrics) {
-          setLiveHistory((current) => {
-            const next = [...current, {
-              label: `${metrics.frame_id}`,
-              frameId: metrics.frame_id,
-              Fine: metrics.fine_cells ?? 0,
-              Medium: metrics.medium_cells ?? 0,
-              Coarse: metrics.coarse_cells ?? 0,
-              activeCells: metrics.active_cells ?? 0,
-              used: Number((metrics.used_budget ?? 0).toFixed(2)),
-              budget: metrics.budget ?? 0,
-            }];
-            return next.slice(-LIVE_HISTORY_LENGTH);
-          });
-        }
+        await fetchLiveFrame(() => cancelled);
       } catch (err) {
         if (cancelled) return;
         setLiveError(err.message);
@@ -173,7 +184,24 @@ export default function App() {
 
     poll();
     return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
-  }, [dataSource, controls.running]);
+  }, [dataSource, controls.running, fetchLiveFrame]);
+
+  // Manual "Step" control (PlaybackCard): advances exactly one frame while
+  // paused. In Live mode that means pulling one real frame from the backend;
+  // in Simulated mode there's no backend frame to pull, so it nudges the
+  // client-side clock forward by the same ~1/28s tick the running animation
+  // loop uses, matching one "frame" of the simulated feed.
+  const stepOnce = useCallback(() => {
+    if (dataSource === "live") {
+      fetchLiveFrame().catch((err) => {
+        setLiveError(err.message);
+        setLiveStatus((current) => (current === "live" ? current : "error"));
+      });
+    } else {
+      setTime((current) => current + 1 / 28);
+      setFrameNumber((current) => current + 1);
+    }
+  }, [dataSource, fetchLiveFrame]);
 
   // Switching modes invalidates the selection (live ids are `track-<n>` /
   // `r-<i>-<j>`; simulated ids are names like "pedestrian") and any live
@@ -255,6 +283,7 @@ export default function App() {
     controls,
     setControls,
     resetSimulation,
+    onStep: stepOnce,
     predictionMode,
     setPredictionMode,
     // Live-awareness. Pages that reach for simulated data by a path other than
