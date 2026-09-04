@@ -28,6 +28,10 @@ export default function Navbar({ activePage, computeUsage, fps, frameNumber, onN
   // otherwise they're the simulation's invented numbers and showing them
   // next to "Backend Unreachable" would still look like telemetry.
   const showMetrics = statusKey === "live" || statusKey === "simulated";
+  // The demo dashboard has its own header with an equivalent status pill,
+  // frame counter, and budget readout -- showing this row there too would put
+  // the same information on screen twice in two different styles.
+  const showStatusRow = activePage !== "demo";
 
   return (
     <header className="grid gap-4 rounded-lg border border-line bg-black/45 px-4 py-3 shadow-panel backdrop-blur-xl xl:grid-cols-[1fr_auto_1fr] xl:items-center">
@@ -49,22 +53,24 @@ export default function Navbar({ activePage, computeUsage, fps, frameNumber, onN
         ))}
       </nav>
 
-      <div className="flex flex-wrap items-center gap-3 text-xs font-bold uppercase tracking-[0.12em] text-slate-300 xl:justify-end">
-        <span className={`flex items-center gap-2 ${textClass}`}>
-          <span className={`h-2.5 w-2.5 rounded-full ${dotClass}`} />
-          {label}
-        </span>
-        {showMetrics ? (
-          <>
-            <span className="flex items-center gap-1"><Gauge size={14} /> {fps} FPS</span>
-            <span className="flex items-center gap-1"><RadioTower size={14} /> Frame {frameNumber}</span>
-            <span className="flex items-center gap-1"><Cpu size={14} /> {computeUsage}% Compute</span>
-            <span className="flex items-center gap-1"><Activity size={14} /> {dataSource === "live" ? "Live" : "Simulated"}</span>
-          </>
-        ) : (
-          <span className="flex items-center gap-1 text-slate-500"><RadioTower size={14} /> No telemetry</span>
-        )}
-      </div>
+      {showStatusRow && (
+        <div className="flex flex-wrap items-center gap-3 text-xs font-bold uppercase tracking-[0.12em] text-slate-300 xl:justify-end">
+          <span className={`flex items-center gap-2 ${textClass}`}>
+            <span className={`h-2.5 w-2.5 rounded-full ${dotClass}`} />
+            {label}
+          </span>
+          {showMetrics ? (
+            <>
+              <span className="flex items-center gap-1"><Gauge size={14} /> {fps} FPS</span>
+              <span className="flex items-center gap-1"><RadioTower size={14} /> Frame {frameNumber}</span>
+              <span className="flex items-center gap-1"><Cpu size={14} /> {computeUsage}% Compute</span>
+              <span className="flex items-center gap-1"><Activity size={14} /> {dataSource === "live" ? "Live" : "Simulated"}</span>
+            </>
+          ) : (
+            <span className="flex items-center gap-1 text-slate-500"><RadioTower size={14} /> No telemetry</span>
+          )}
+        </div>
+      )}
     </header>
   );
 }
