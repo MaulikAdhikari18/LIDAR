@@ -97,6 +97,32 @@ _IMPORTANCE_BY_IDX = np.array(
 )
 
 
+# --- Bridge to perception/pointnet2_semantic.py's checkpoint taxonomy -----
+# The PointNet++ checkpoint only knows 3 classes: terrain / static / dynamic
+# (see CHECKPOINT_CLASS_NAMES there). To score its live predictions against
+# real SemanticKITTI ground truth we need the SAME per-point ground-truth ids
+# collapsed down to that same 3-class scheme, using the "category" this file
+# already assigns every id ("drivable" -> terrain, "dynamic" -> dynamic,
+# everything else -> static). This mirrors _ID_TO_IS_DYNAMIC below exactly,
+# just with a 3-way instead of 2-way split.
+CHECKPOINT_TAXONOMY = {"terrain": 0, "static": 1, "dynamic": 2}
+
+_ID_TO_CHECKPOINT_IDX = np.full(_MAX_ID, CHECKPOINT_TAXONOMY["static"], dtype=np.int64)
+for _sid, (_name, _category) in CLASS_MAP.items():
+    if _category == "dynamic":
+        _ID_TO_CHECKPOINT_IDX[_sid] = CHECKPOINT_TAXONOMY["dynamic"]
+    elif _category == "drivable":
+        _ID_TO_CHECKPOINT_IDX[_sid] = CHECKPOINT_TAXONOMY["terrain"]
+    # else: leave at the "static" default set above
+
+
+def to_checkpoint_taxonomy(semantic_ids):
+    """Maps raw SemanticKITTI ids (already clipped to [0, _MAX_ID)) to the
+    PointNet++ checkpoint's 3-class scheme: 0=terrain, 1=static, 2=dynamic.
+    Vectorized lookup, same pattern as _ID_TO_CLASS_IDX above."""
+    return _ID_TO_CHECKPOINT_IDX[semantic_ids]
+
+
 def load_label_file(path):
     """Returns (semantic_ids, instance_ids) arrays aligned to the point cloud."""
     raw = np.fromfile(str(path), dtype=np.uint32)

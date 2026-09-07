@@ -13,15 +13,25 @@ export const NAV_ITEMS = [
   { id: "comparison", label: "Comparison" },
 ];
 
+// The road in both LiveLidarScene.jsx and AdaptiveMap.jsx is a trapezoid:
+// half-width(y) = 4 + 0.2*y, centered on x=50 (matches "M26,100 L46,0 L54,0
+// L74,100" / "M40,2 L60,2 L74,100 L26,100" in those files). Any object meant
+// to travel along the road, rather than drift across it, needs
+// velocity.x = ratio * 0.2 * velocity.y so it holds a constant lane offset
+// as the lane narrows toward the horizon (y -> 0).
 export const BASE_REGIONS = [
   {
     id: "pedestrian",
     name: "Pedestrian Corridor",
     semanticClass: "Dynamic human",
     kind: "dynamic",
-    position: { x: 34, y: 60 },
-    velocity: { x: 0.12, y: -0.08 },
-    directionDeg: -34,
+    // Moved off the road edge onto the sidewalk (x_left(60) = 46 - 0.2*60 =
+    // 34, so x=28 gives a 6-unit buffer) and given vx = -0.2 * vy so it
+    // tracks parallel to that edge as it walks forward, instead of the old
+    // vx that was ~7x too fast and walked it straight into the lane.
+    position: { x: 28, y: 60 },
+    velocity: { x: 0.0032, y: -0.016 },
+    directionDeg: -79,
     elevation: 1.72,
     occupancy: 0.82,
     confidence: 0.78,
@@ -37,9 +47,15 @@ export const BASE_REGIONS = [
     name: "Moving Vehicle",
     semanticClass: "Dynamic vehicle",
     kind: "dynamic",
-    position: { x: 63, y: 34 },
-    velocity: { x: -0.1, y: 0.07 },
-    directionDeg: 145,
+    // Was heading toward the ego (vy > 0) and drifting off-road (vx too
+    // large for the narrowing lane, and the old x=63 was already outside
+    // the lane's right edge at y=34). Now starts in-lane at a fixed 0.5
+    // lane-offset ratio and drives ahead (vy < 0); at y=46 that ratio puts
+    // it at x=56.6, ~5 units from the Road Barrier at (52,46) -- passing
+    // near it instead of colliding with the ego.
+    position: { x: 59, y: 70 },
+    velocity: { x: -0.009, y: -0.09 },
+    directionDeg: 264,
     elevation: 1.45,
     occupancy: 0.91,
     confidence: 0.86,
@@ -47,26 +63,26 @@ export const BASE_REGIONS = [
     motion: 0.82,
     uncertainty: 0.3,
     geometricComplexity: 0.46,
-    distance: 26,
+    distance: 20,
     baseCost: 0.38,
   },
   {
-    id: "terrain",
-    name: "Uncertain Terrain",
-    semanticClass: "Ambiguous terrain",
-    kind: "uncertain",
-    position: { x: 48, y: 72 },
+    id: "barrier",
+    name: "Road Barrier",
+    semanticClass: "Static road obstacle",
+    kind: "static",
+    position: { x: 52, y: 46 },
     velocity: { x: 0, y: 0 },
     directionDeg: 0,
-    elevation: 0.36,
-    occupancy: 0.47,
-    confidence: 0.51,
-    safetyRelevance: 0.7,
-    motion: 0.08,
-    uncertainty: 0.92,
-    geometricComplexity: 0.78,
-    distance: 31,
-    baseCost: 0.28,
+    elevation: 0.85,
+    occupancy: 0.9,
+    confidence: 0.8,
+    safetyRelevance: 0.87,
+    motion: 0,
+    uncertainty: 0.58,
+    geometricComplexity: 0.64,
+    distance: 24,
+    baseCost: 0.3,
   },
   {
     id: "edge",
@@ -125,16 +141,13 @@ export const BASE_REGIONS = [
 ];
 
 export const DEMO_STEPS = [
-  "Mostly coarse environment: budget is conserved for low-value regions.",
-  "Pedestrian detected: semantic safety relevance rises sharply.",
-  "Expected information gain increases around the pedestrian.",
-  "Utility exceeds the refinement threshold.",
-  "More computational cells are allocated to the pedestrian corridor.",
-  "The region splits into fine 5 cm cells.",
-  "Future trajectory is predicted from velocity and direction.",
-  "High-probability future occupancy cells refine ahead of arrival.",
-  "The pedestrian moves; old cells lose utility.",
-  "Old region coarsens back to 50 cm cells.",
-  "Budget is reclaimed from low-value space.",
-  "Reclaimed budget moves to the next highest-utility region.",
+  "PERCEIVE — classify terrain, static infrastructure and dynamic objects.",
+  "DETECT — a road obstacle enters the vehicle sensor view.",
+  "TRACK — the obstacle is associated across frames and its motion is evaluated.",
+  "PREDICT — future occupancy is projected along the driving corridor.",
+  "PRIORITIZE — safety relevance and predicted interaction increase information value.",
+  "UTILITY — expected information gain is compared with computational cost.",
+  "REFINE — the critical obstacle and future corridor receive fine 5 cm cells.",
+  "REALLOCATE — low-value cells are coarsened and their budget is reclaimed.",
+  "SAFE CORRIDOR — the blocked path is replaced with a predicted free corridor.",
 ];

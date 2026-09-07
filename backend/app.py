@@ -104,8 +104,10 @@ _bootstrap()
 
 class ConfigUpdate(BaseModel):
     resolution_levels: list[float] | None = None
+    map_dimensions: tuple[float, float] | None = None
     computational_budget: float | None = None
     prediction_horizon: float | None = None
+    perception_mode: str | None = None
     wS: float | None = None
     wM: float | None = None
     wU: float | None = None
@@ -219,6 +221,30 @@ def baseline():
 @app.get("/api/metrics")
 def metrics():
     return controller.metrics_summary()
+
+@app.get("/api/model/info")
+def model_info():
+    """The PointNet++ checkpoint's OWN offline validation numbers (mean_iou,
+    accuracy, per-class IoU), extracted from pointnet2_foveamap.pth itself --
+    previously captured in code (checkpoint_mean_iou) but never surfaced
+    anywhere. Only meaningful once perception_mode='pointnet2' has actually
+    loaded the checkpoint at least once; until then there's nothing to report."""
+    if getattr(config, "perception_mode", "ground_truth") != "pointnet2":
+        return {"ok": False, "detail": "perception_mode is not 'pointnet2'; no checkpoint loaded."}
+    try:
+        perception = controller._get_pointnet2_perception()
+    except RuntimeError as exc:
+        return {"ok": False, "detail": str(exc)}
+    return {"ok": True, "info": perception.info()}
+
+@app.get("/api/model/accuracy")
+def model_accuracy():
+    """Live accuracy/mIoU of perception_mode='pointnet2' predictions against
+    this repo's own SemanticKITTI ground truth, accumulated frame by frame as
+    the demo actually runs -- distinct from /api/model/info's offline number.
+    Empty/None fields until at least one pointnet2 frame with ground truth
+    has been processed."""
+    return controller.accuracy_summary()
 
 if __name__ == "__main__":
     import uvicorn

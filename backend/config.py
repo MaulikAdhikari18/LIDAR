@@ -3,7 +3,14 @@ from dataclasses import dataclass, field
 @dataclass
 class Config:
     resolution_levels: list = field(default_factory=lambda: [0.50, 0.20, 0.05])
-    map_dimensions: tuple = (40.0, 30.0)
+    # PS text calls for ~100m of coverage. This is (width, height) in metres,
+    # centered on the sensor, so (100.0, 100.0) gives +-50m per axis. If the
+    # PS specifically means a 100m RADIUS (200m across), bump this to
+    # (200.0, 200.0) -- the quadtree (mapping/quadtree.py) is a sparse dict
+    # keyed by touched cells, not a dense array, so widening this costs
+    # nothing until points actually land out there. Previously (40.0, 30.0),
+    # which undercut the PS's stated range for no algorithmic reason.
+    map_dimensions: tuple = (100.0, 100.0)
     # 5000 is the value the demo actually runs at, and was previously applied by
     # hand via POST /api/config after every restart (the original default was
     # 160.0, which is far too small for a real KITTI scan -- the allocator has
@@ -11,6 +18,17 @@ class Config:
     # bare `python app.py` is demo-ready. Override with FOVEAMAP_BUDGET.
     computational_budget: float = 5000.0
     prediction_horizon: float = 2.0
+
+    # Which perception path controller.py uses to turn points into regions:
+    #   "ground_truth" - original/default behavior: the SemanticKITTI .label
+    #                     bridge when the current frame has a label_path,
+    #                     else the density-only generic fallback. Untouched,
+    #                     proven, the demo-safe path if inference is flaky.
+    #   "pointnet2"     - the trained PointNet++ checkpoint (see
+    #                     perception/pointnet2_semantic.py) for every frame,
+    #                     regardless of label_path. Requires torch and
+    #                     checkpoints/pointnet2_foveamap.pth.
+    perception_mode: str = "ground_truth"
 
     # Current/future value weights
     wS: float = 0.30

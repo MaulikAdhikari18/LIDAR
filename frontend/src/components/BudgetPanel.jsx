@@ -26,30 +26,35 @@ export default function BudgetPanel({ budgetTotal, budgetUsed, isLive, onSelectR
         Computational Budget
       </div>
 
+      <p className="mb-3 text-[11px] leading-snug text-slate-500">
+        Every tracked object costs a share of a fixed compute budget, based on how finely it's being resolved right
+        now. This panel shows where that budget is actually going this frame — not where it was planned to go.
+      </p>
+
       <div className="flex items-end justify-between gap-4">
         <div>
-          <p className="metric-label">Fixed budget</p>
+          <p className="metric-label" title="The total compute ceiling the system can spend across all cells this frame.">Fixed budget</p>
           <h2 className="text-4xl font-black text-white">{Math.round(total).toLocaleString()}</h2>
           <span className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{unit}</span>
         </div>
         <Database className="text-cyanSignal" size={36} />
       </div>
 
-      <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-950">
+      <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-950" title="Percentage of the fixed budget currently in use.">
         <div className="h-full rounded-full bg-gradient-to-r from-cyanSignal to-stable" style={{ width: `${utilization}%` }} />
       </div>
 
       <div className="mt-4 grid grid-cols-3 gap-2">
         <div>
-          <p className="metric-label">{isLive ? "In use" : "Allocated"}</p>
+          <p className="metric-label cursor-help" title="How much of the fixed budget is spent on active cells right now.">{isLive ? "In use" : "Allocated"}</p>
           <b className="text-lg text-white">{Math.round(used).toLocaleString()}</b>
         </div>
         <div>
-          <p className="metric-label">Available</p>
+          <p className="metric-label cursor-help" title="Budget left over that could be spent refining another region if something becomes more important.">Available</p>
           <b className="text-lg text-white">{Math.round(available).toLocaleString()}</b>
         </div>
         <div>
-          <p className="metric-label">Utilization</p>
+          <p className="metric-label cursor-help" title="In-use budget as a percentage of the fixed total.">Utilization</p>
           <b className="text-lg text-white">{utilization}%</b>
         </div>
       </div>
@@ -62,6 +67,7 @@ export default function BudgetPanel({ budgetTotal, budgetUsed, isLive, onSelectR
             }`}
             key={region.id}
             onClick={() => onSelectRegion(region.id)}
+            title={`${region.name}: currently held at ${region.decision === "REFINE" ? "fine" : region.decision === "COARSEN" ? "coarse" : "medium"} resolution because of its safety relevance, motion, and uncertainty this frame.`}
             type="button"
           >
             <span className="z-10 text-slate-200">{region.name}</span>

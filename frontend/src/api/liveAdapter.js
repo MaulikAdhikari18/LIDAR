@@ -9,6 +9,7 @@
 // client-side -- this is the whole point of wiring it up for real.
 
 import { RESOLUTION_LEVELS } from "../data/simulationData.js";
+import { clamp as clampToRange } from "../utils/utilityCalculation.js";
 
 const SAFETY_RELEVANCE = {
   pedestrian: 1.0, vehicle: 0.9, curb: 0.75,
@@ -104,6 +105,21 @@ function metersToCanvas(x, y, mapDimensions) {
   };
 }
 
+// The backend's region_id is a real quadtree path -- it grows a new
+// "/parent-child" segment every time a cell refines or coarsens, so after a
+// few subdivisions it becomes a long unreadable string like
+// "r-78-24/1-0/0-0/0-0/0-0/0-0/0-0/0-0". It isn't random or broken, just not
+// meant for display. Keep the base cell address (which stays stable and
+// meaningful) and summarize the subdivision depth instead of printing the
+// whole path.
+function shortRegionId(regionId) {
+  if (typeof regionId !== "string") return regionId;
+  const segments = regionId.split("/");
+  const base = segments[0];
+  const depth = segments.length - 1;
+  return depth > 0 ? `${base}\u00B7L${depth}` : base;
+}
+
 function inferKind(region) {
   if (region.semantic_class === "vehicle" || region.semantic_class === "pedestrian") return "dynamic";
   if (region.semantic_class === "road" && region.occupancy < 0.15) return "low";
@@ -114,7 +130,7 @@ function inferKind(region) {
 function prettyName(region, index, track) {
   if (track) return `${track.class.charAt(0).toUpperCase() + track.class.slice(1)} #${track.track_id}`;
   const label = region.semantic_class.charAt(0).toUpperCase() + region.semantic_class.slice(1);
-  return `${label} #${region.region_id ?? index}`;
+  return `${label} #${shortRegionId(region.region_id) ?? index}`;
 }
 
 /**
@@ -183,10 +199,43 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
     const position = metersToCanvas(x, y, mapDimensions);
     const kind = track ? "dynamic" : inferKind(region);
 
-    const utility = candidate?.utility ?? 0;
-    const ig = candidate?.ig ?? 0;
+    // Factors used both for display and for the fallback utility formula
+    // below -- computed once here so the two stay in sync.
+    const safetyRelevance = SAFETY_RELEVANCE[semanticClass] ?? region?.semantic_importance ?? 0.45;
+    const motion = track ? Math.min(1, Math.hypot(vx, vy) / 3) : (region?.motion ?? 0);
+    const uncertainty = region?.uncertainty ?? track?.uncertainty ?? 0.3;
+    const geometricComplexity = region?.geometry ?? 0.5;
+    const distanceValue = region?.distance_relevance ?? 1 / (1 + Math.hypot(x, y) / 10);
+    const futureProbability = region?.future_probability ?? 0;
     const cost = candidate?.cost ?? Math.max(region?.active_cost ?? 0.05, 0.001);
-    const decision = utility >= 0.55 ? "REFINE" : utility <= 0.25 ? "COARSEN" : "MAINTAIN";
+
+    // The backend only returns a `candidates` entry for a region_id when it
+    // actually evaluated that cell for a resolution change this frame -- most
+    // active cells (especially ones a moving track just landed near) simply
+    // never got a candidate, so `candidate` is undefined far more often than
+    // not. Falling back to 0 there is what made Expected Information Gain and
+    // Utility show 0.00 for a real, confidently-tracked vehicle. When there's
+    // no backend candidate, estimate ig with the same weighted formula the
+    // simulated mode already uses (utilityCalculation.js), built from fields
+    // the backend DID give us -- a real (if approximate) number instead of a
+    // false zero.
+    const estimatedIg = clampToRange(
+      safetyRelevance * 0.27 +
+        motion * 0.18 +
+        uncertainty * 0.2 +
+        geometricComplexity * 0.15 +
+        distanceValue * 0.08 +
+        futureProbability * 0.12,
+      0.04,
+      0.98,
+    );
+    const ig = candidate?.ig ?? estimatedIg;
+    const usedFallbackIg = candidate?.ig == null;
+    const utility = candidate?.utility ?? ig / cost;
+
+    const refineThreshold = config?.refine_threshold ?? 0.55;
+    const coarsenThreshold = config?.coarsen_threshold ?? 0.25;
+    const decision = utility >= refineThreshold ? "REFINE" : utility <= coarsenThreshold ? "COARSEN" : "MAINTAIN";
 
     let futurePosition = position;
     const future = (frameResult.future || []).find(f => f.track_id === track?.track_id);
@@ -216,26 +265,30 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
       elevation: region?.elevation ?? 0,
       occupancy: region?.occupancy ?? 0.5,
       confidence: region?.confidence ?? track?.confidence ?? 0.7,
-      safetyRelevance: SAFETY_RELEVANCE[semanticClass] ?? region?.semantic_importance ?? 0.45,
-      motion: track ? Math.min(1, Math.hypot(vx, vy) / 3) : (region.motion ?? 0),
-      uncertainty: region?.uncertainty ?? track?.uncertainty ?? 0.3,
-      geometricComplexity: region?.geometry ?? 0.5,
+      safetyRelevance,
+      motion,
+      uncertainty,
+      geometricComplexity,
       distance: Math.hypot(x, y),
-      distanceValue: region?.distance_relevance ?? 1 / (1 + Math.hypot(x, y) / 10),
+      distanceValue,
       baseCost: region?.active_cost ?? cost,
 
-      // Fields the existing components read directly (previously produced
-      // by calculateRegionUtility on the client -- now the backend's own
-      // authoritative numbers, not a re-derived approximation).
+      // Fields the existing components read directly. When the backend sent
+      // a real candidate for this region_id, these are its authoritative
+      // numbers; otherwise they're the estimate computed above from real
+      // per-region factors -- never a bare 0.00.
       expectedInformationGain: ig,
       computationalCost: cost,
       utility,
       decision,
+      // Lets the UI (RegionInspector/UtilityEngine) say "estimated" instead
+      // of silently presenting an estimate as backend-measured.
+      igEstimated: usedFallbackIg,
       // Object-shaped, matching RESOLUTION_LEVELS -- see resolutionLevelFor().
       resolution: resolutionLevelFor(region?.resolution),
       // The raw backend value, for anything that wants to do real math on it.
       resolutionMetres: region?.resolution ?? null,
-      futureProbability: region?.future_probability ?? 0,
+      futureProbability,
       currentPosition: position,
       futurePosition,
       futureTrack,

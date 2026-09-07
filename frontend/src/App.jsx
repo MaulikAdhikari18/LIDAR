@@ -7,7 +7,7 @@ import BudgetAnalytics from "./pages/BudgetAnalytics.jsx";
 import Comparison from "./pages/Comparison.jsx";
 import { BASE_REGIONS, DEMO_STEPS, TOTAL_BUDGET } from "./data/simulationData.js";
 import { calculateFrame } from "./utils/utilityCalculation.js";
-import { advanceFrame, getConfig, resetBackend } from "./api/backendClient.js";
+import { advanceFrame, getConfig, getDatasetStatus, resetBackend } from "./api/backendClient.js";
 import { adaptBackendFrame } from "./api/liveAdapter.js";
 
 const initialControls = {
@@ -25,6 +25,43 @@ const initialControls = {
 // sync with config.py and silently rescale every per-region figure on screen.
 const FALLBACK_CONFIG = { map_dimensions: [40, 30], computational_budget: 5000 };
 const LIVE_POLL_MS = 350;
+// A raw per-frame utility number can wobble slightly around a threshold from
+// one poll to the next, flipping a region's REFINE/MAINTAIN/COARSEN label
+// back and forth even though nothing meaningful changed -- exactly the
+// "recalculating every frame" flicker. Require the SAME new decision to show
+// up this many consecutive polls before it's actually committed and shown;
+// until then the previously-committed decision keeps displaying.
+const DECISION_HOLD_FRAMES = 3;
+
+// `stateMap` persists across calls (owned by a ref in the component) so each
+// region's hold-streak survives from one poll to the next.
+function applyDecisionHold(regions, stateMap) {
+  return regions.map((region) => {
+    const raw = region.decision;
+    const prev = stateMap.get(region.id) ?? { committed: raw, pendingDecision: raw, streak: 0 };
+    let { committed, pendingDecision, streak } = prev;
+
+    if (raw === committed) {
+      pendingDecision = raw;
+      streak = 0;
+    } else if (raw === pendingDecision) {
+      streak += 1;
+      if (streak >= DECISION_HOLD_FRAMES) {
+        committed = raw;
+        streak = 0;
+      }
+    } else {
+      pendingDecision = raw;
+      streak = 1;
+    }
+
+    stateMap.set(region.id, { committed, pendingDecision, streak });
+    // rawDecision is kept for anyone who wants the unfiltered instantaneous
+    // value; every existing component reads `decision`, which is now the
+    // held/stable one.
+    return { ...region, decision: committed, rawDecision: raw };
+  });
+}
 // How many frames of live metrics to keep for the Budget Analytics timeline.
 const LIVE_HISTORY_LENGTH = 40;
 
@@ -48,6 +85,10 @@ export default function App() {
   const [liveMetrics, setLiveMetrics] = useState(null);
   const [liveHistory, setLiveHistory] = useState([]);
   const [liveConfig, setLiveConfig] = useState(null);
+  // Total frames in the currently-loaded dataset (e.g. 1000 for the extended
+  // KITTI set), so the UI can show "Frame 42 / 1000" instead of a bare
+  // counter with no sense of progress or when it loops back to 0.
+  const [datasetTotalFrames, setDatasetTotalFrames] = useState(null);
   const [liveError, setLiveError] = useState(null);
   // "idle" | "connecting" | "live" | "empty" | "error"
   const [liveStatus, setLiveStatus] = useState("idle");
@@ -56,6 +97,9 @@ export default function App() {
   // the polling effect tear down and restart every time config arrives.
   const liveConfigRef = useRef(null);
   useEffect(() => { liveConfigRef.current = liveConfig; }, [liveConfig]);
+  // Per-region hold state for applyDecisionHold; a ref (not state) because
+  // it's mutated every poll and should never itself trigger a re-render.
+  const decisionHoldRef = useRef(new Map());
 
   useEffect(() => {
     let animationId;
@@ -93,7 +137,7 @@ export default function App() {
         showPrediction: true,
         demoStep: (current.demoStep + 1) % DEMO_STEPS.length,
       }));
-    }, 1700);
+    }, 1500);
 
     return () => window.clearInterval(interval);
   }, [controls.demoActive]);
@@ -114,6 +158,15 @@ export default function App() {
         if (!cancelled) setLiveConfig(FALLBACK_CONFIG);
       });
 
+    getDatasetStatus()
+      .then((payload) => {
+        if (!cancelled) setDatasetTotalFrames(payload.frames ?? null);
+      })
+      .catch(() => {
+        // Not fatal -- the frame counter just falls back to showing no total.
+        if (!cancelled) setDatasetTotalFrames(null);
+      });
+
     return () => { cancelled = true; };
   }, [dataSource]);
 
@@ -127,7 +180,8 @@ export default function App() {
   const fetchLiveFrame = useCallback(async (isStale = () => false) => {
     const result = await advanceFrame();
     if (isStale()) return;
-    const { regions, metrics } = adaptBackendFrame(result, liveConfigRef.current ?? FALLBACK_CONFIG);
+    const { regions: rawRegions, metrics } = adaptBackendFrame(result, liveConfigRef.current ?? FALLBACK_CONFIG);
+    const regions = applyDecisionHold(rawRegions, decisionHoldRef.current);
     setLiveRegions(regions);
     setLiveMetrics(metrics);
     setFrameNumber(result.frame_id);
@@ -263,6 +317,7 @@ export default function App() {
       setLiveMetrics(null);
       setLiveHistory([]);
       setLiveStatus("connecting");
+      decisionHoldRef.current.clear();
       resetBackend()
         .then(() => setFrameNumber(0))
         .catch((err) => { setLiveError(err.message); setLiveStatus("error"); });
@@ -296,9 +351,14 @@ export default function App() {
     budgetUsed,
     thresholds,
     resolutionLevels,
+    datasetTotalFrames,
   };
 
   const showLiveGate = dataSource === "live" && !isLive;
+  // "42 / 1000", or just "42" if the dataset's total isn't known yet.
+  const frameLabel = isLive && datasetTotalFrames
+    ? `${frameNumber} / ${datasetTotalFrames}`
+    : `${frameNumber}`;
 
   return (
     <div className="min-h-screen px-4 py-4 lg:px-6">
@@ -315,7 +375,7 @@ export default function App() {
             />
             <span className={liveStatus === "live" ? "text-emerald-300" : liveStatus === "error" ? "text-rose-400" : "text-amber-300"}>
               {liveStatus === "live"
-                ? `LIVE · backend frame ${frameNumber}`
+                ? `LIVE · backend frame ${frameLabel}${datasetTotalFrames && frameNumber >= datasetTotalFrames - 1 ? " · looping back to 0 next" : ""}`
                 : liveStatus === "error"
                   ? "LIVE · backend unreachable"
                   : liveStatus === "empty"
@@ -345,6 +405,7 @@ export default function App() {
         computeUsage={computeUsage}
         fps={fps}
         frameNumber={frameNumber}
+        datasetTotalFrames={datasetTotalFrames}
         onNavigate={setActivePage}
         dataSource={dataSource}
         liveStatus={liveStatus}

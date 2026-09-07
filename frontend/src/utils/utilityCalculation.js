@@ -84,17 +84,34 @@ export function calculateFrame(time, options = {}) {
     ...region,
     budgetWeight: Math.pow(region.utility, 1.7) * (region.kind === "low" ? 0.35 : 1),
   }));
+
+  // Baseline: every region needs SOME representation just to exist on the
+  // map at all, even at 50 cm coarse resolution. This part is always paid.
   const minimumCells = 4600;
+
+  // The pool ABOVE baseline, for medium/fine resolution. This used to be
+  // force-distributed in full every single frame via a trailing "correction"
+  // term that padded the last region so the sum always landed on exactly
+  // TOTAL_BUDGET -- so utilization read 100% on a completely empty, all-
+  // COARSEN "clear road" frame just as much as on a frame with five regions
+  // refining. That made the utilization number meaningless as a signal of
+  // whether the system was actually saving compute.
+  //
+  // Now only regions whose OWN decision calls for MEDIUM or FINE resolution
+  // (MAINTAIN / REFINE) draw from this pool at all; a COARSEN region takes
+  // nothing beyond its baseline. A quiet scene (mostly/all COARSEN) now
+  // genuinely reports lower total usage than a busy one -- utilization moves
+  // with real scene demand instead of always pinning at 100%.
   const distributableBudget = TOTAL_BUDGET - minimumCells * weighted.length;
   const totalWeight = weighted.reduce((sum, region) => sum + region.budgetWeight, 0);
 
-  const allocated = weighted.map((region) => ({
-    ...region,
-    cellsAllocated: Math.round(minimumCells + (distributableBudget * region.budgetWeight) / totalWeight),
-  }));
-
-  const correction = TOTAL_BUDGET - allocated.reduce((sum, region) => sum + region.cellsAllocated, 0);
-  allocated[allocated.length - 1].cellsAllocated += correction;
+  const allocated = weighted.map((region) => {
+    if (region.decision === "COARSEN") {
+      return { ...region, cellsAllocated: minimumCells };
+    }
+    const earned = totalWeight > 0 ? Math.round((distributableBudget * region.budgetWeight) / totalWeight) : 0;
+    return { ...region, cellsAllocated: minimumCells + Math.max(0, earned) };
+  });
 
   return allocated;
 }
@@ -103,12 +120,20 @@ export function buildBudgetHistory(time, options = {}) {
   return Array.from({ length: 16 }, (_, index) => {
     const t = time - (15 - index) * 0.6;
     const frame = calculateFrame(t, options);
+    // Look up by id defensively: BASE_REGIONS' "terrain" region was renamed to
+    // "building" (Building Facade), but this still queried the old id, so
+    // .find() returned undefined and the immediate ".cellsAllocated" threw on
+    // every render of Budget Analytics -- crashing that page to a blank
+    // screen while every other page (which never calls this function) kept
+    // working fine. Falling back to 0 on a missing id means a future rename
+    // degrades the chart instead of blanking the whole page.
+    const cellsFor = (id) => frame.find((r) => r.id === id)?.cellsAllocated ?? 0;
     return {
       label: `${index - 15}s`,
-      Pedestrian: frame.find((r) => r.id === "pedestrian").cellsAllocated,
-      Vehicle: frame.find((r) => r.id === "vehicle").cellsAllocated,
-      Terrain: frame.find((r) => r.id === "terrain").cellsAllocated,
-      RoadEdge: frame.find((r) => r.id === "edge").cellsAllocated,
+      Pedestrian: cellsFor("pedestrian"),
+      Vehicle: cellsFor("vehicle"),
+      Terrain: cellsFor("building"),
+      RoadEdge: cellsFor("edge"),
     };
   });
 }

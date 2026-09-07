@@ -18,7 +18,7 @@ const STATUS_COPY = {
   error: { label: "Backend Unreachable", dotClass: "bg-rose-500 shadow-[0_0_14px_rgba(244,63,94,0.85)]", textClass: "text-rose-400" },
 };
 
-export default function Navbar({ activePage, computeUsage, fps, frameNumber, onNavigate, dataSource = "simulated", liveStatus = "idle" }) {
+export default function Navbar({ activePage, computeUsage, fps, frameNumber, datasetTotalFrames, onNavigate, dataSource = "simulated", liveStatus = "idle" }) {
   // dataSource=simulated ignores liveStatus entirely (it's leftover state
   // from a previous Live session); dataSource=live maps liveStatus's
   // "idle" (not yet polled) onto the same "connecting" copy.
@@ -57,7 +57,10 @@ export default function Navbar({ activePage, computeUsage, fps, frameNumber, onN
         {showMetrics ? (
           <>
             <span className="flex items-center gap-1"><Gauge size={14} /> {fps} FPS</span>
-            <span className="flex items-center gap-1"><RadioTower size={14} /> Frame {frameNumber}</span>
+            <span className="flex items-center gap-1" title={dataSource === "live" ? "Position in the loaded dataset (loops back to 0 after the last frame)." : "Simulated frame counter (runs indefinitely, not tied to a fixed dataset)."}>
+              <RadioTower size={14} />
+              Frame {dataSource === "live" && datasetTotalFrames ? `${frameNumber} / ${datasetTotalFrames}` : frameNumber}
+            </span>
             <span className="flex items-center gap-1"><Cpu size={14} /> {computeUsage}% Compute</span>
             <span className="flex items-center gap-1"><Activity size={14} /> {dataSource === "live" ? "Live" : "Simulated"}</span>
           </>
