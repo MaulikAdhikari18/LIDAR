@@ -36,6 +36,14 @@ export default function RegionInspector({ region }) {
     ["Utility", region.utility.toFixed(2)],
     ["Resolution", `${level.size} ${level.label}`],
     ["Current decision", region.decision],
+    // A1: only meaningful once this cell has actually settled on a
+    // repeated reading -- 0 for a brand-new or just-changed cell.
+    ["Confidence stability", `${region.stableObservations ?? 0} confirming frame${region.stableObservations === 1 ? "" : "s"}`],
+    // A2: only tracked dynamic objects predict a future position, so this
+    // is absent (and hidden below) for static grid cells.
+    ...(Number.isFinite(region.predictionError)
+      ? [["Prediction error", `${region.predictionError.toFixed(2)} m`]]
+      : []),
   ];
 
   return (

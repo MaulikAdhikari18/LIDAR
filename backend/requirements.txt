@@ -1,12 +1,12 @@
-fastapi>=0.115,<1
-uvicorn[standard]>=0.30,<1
-python-multipart>=0.0.9,<1
-numpy>=1.26,<3
-pytest>=8,<9
-# Optional, only for .pcd/.ply:
-# open3d>=0.18
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+pydantic>=2.6
+pytest>=8.0
+httpx>=0.27
 
-# Only required for PERCEPTION_MODE="pointnet2" (perception/pointnet2_semantic.py).
-# CPU-only inference is fine for the demo; install a CUDA build separately if
-# a GPU is available on the presentation machine.
-torch>=2.2,<3
+# Optional — only needed if you want to load a trained PointNet++
+# checkpoint (models/checkpoints/pointnet2.pth). The backend runs fully
+# without it, using the deterministic label-driven perception fallback.
+# torch>=2.2
+# open3d>=0.18

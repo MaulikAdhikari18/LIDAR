@@ -2,6 +2,8 @@ import { memo, useMemo } from "react";
 import { motion } from "framer-motion";
 import { Pause, Play, RotateCcw, Route, ScanLine } from "lucide-react";
 import DemoController from "./DemoController.jsx";
+import { BarrierModel, BuildingFacade, CarRearModel, PersonModel, TreeSide } from "./SceneModels.jsx";
+import { layoutLabels } from "../utils/labelLayout.js";
 
 // ---------------------------------------------------------------------------
 // EGO-VEHICLE PERSPECTIVE PROJECTION
@@ -31,105 +33,83 @@ const pt = (wx, wy) => {
   return `${p.sx.toFixed(2)},${p.sy.toFixed(2)}`;
 };
 
-// Small, fast, deterministic RNG so the point cloud is stable across renders
-// (a Math.random() cloud would shimmer every frame).
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a = (a + 0x6d2b79f5) | 0;
-    let x = Math.imul(a ^ (a >>> 15), 1 | a);
-    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-const rnd = (rng, a, b) => a + (b - a) * rng();
-
-// Fill a world-space box with points and project each into screen space.
-// Depth fog: far points fade out so the cloud reads as receding 3D volume.
-function fillVolume(rng, out, { x0, x1, y0, y1, eMin = 0, eMax, count, color, rBase = 0.5, opacity = 0.7 }) {
-  for (let i = 0; i < count; i += 1) {
-    const wx = rnd(rng, x0, x1);
-    const wy = rnd(rng, y0, y1);
-    const e = rnd(rng, eMin, eMax);
-    const p = project(wx, wy);
-    const fog = 0.28 + 0.72 * p.depth;
-    out.push({
-      x: p.sx,
-      y: p.sy - e * p.scale * HEIGHT_K,
-      r: Math.max(0.12, rBase * p.scale),
-      color,
-      opacity: Math.min(0.95, opacity * fog),
-    });
-  }
-}
-
-// Decorative environment point cloud: roadside buildings + tree canopies +
-// ground carpet. Dense enough to read as a real scanned scene; atmospheric
-// only (no labels, not selectable) so the tracked regions read on top of it.
-const STRUCTURES = [
-  // left building facades (multiple depth bands)
-  { x0: -34, x1: 4, y0: 8, y1: 30, eMax: 30, count: 240, color: "#38bdf8", rBase: 0.46 },
-  { x0: -30, x1: 6, y0: 30, y1: 58, eMax: 34, count: 300, color: "#38bdf8", rBase: 0.5 },
-  { x0: -26, x1: 8, y0: 58, y1: 86, eMax: 26, count: 220, color: "#38bdf8", rBase: 0.55 },
-  // right building facades
-  { x0: 96, x1: 134, y0: 10, y1: 32, eMax: 28, count: 240, color: "#38bdf8", rBase: 0.46 },
-  { x0: 94, x1: 132, y0: 32, y1: 60, eMax: 32, count: 300, color: "#38bdf8", rBase: 0.5 },
-  { x0: 92, x1: 128, y0: 60, y1: 88, eMax: 24, count: 220, color: "#38bdf8", rBase: 0.55 },
-  // far skyline blocks straight ahead
-  { x0: 12, x1: 30, y0: 4, y1: 16, eMax: 20, count: 120, color: "#38bdf8", rBase: 0.4 },
-  { x0: 70, x1: 88, y0: 4, y1: 16, eMax: 22, count: 120, color: "#38bdf8", rBase: 0.4 },
-  // roadside tree canopies (green)
-  { x0: 9, x1: 24, y0: 22, y1: 34, eMin: 4, eMax: 12, count: 150, color: "#34d399", rBase: 0.62 },
-  { x0: 76, x1: 91, y0: 20, y1: 32, eMin: 4, eMax: 12, count: 150, color: "#34d399", rBase: 0.62 },
-  { x0: 8, x1: 25, y0: 52, y1: 68, eMin: 4, eMax: 14, count: 180, color: "#22c55e", rBase: 0.7 },
-  { x0: 75, x1: 92, y0: 54, y1: 72, eMin: 4, eMax: 14, count: 180, color: "#22c55e", rBase: 0.7 },
+// Roadside environment: real building facades + real trees, laid out in
+// depth bands so nearer structures are bigger/skewed correctly by the same
+// perspective projection every tracked object uses. Replaces the old
+// abstract point-cloud silhouettes with recognizable geometry.
+const BUILDINGS = [
+  // left side, far -> near
+  { x0: -30, x1: -4, y: 14, eMax: 26, seed: 1 },
+  { x0: -32, x1: -2, y: 34, eMax: 32, seed: 2 },
+  { x0: -34, x1: 2, y: 58, eMax: 24, seed: 3 },
+  { x0: -30, x1: 6, y: 84, eMax: 20, seed: 4 },
+  // right side, far -> near
+  { x0: 104, x1: 130, y: 15, eMax: 24, seed: 5 },
+  { x0: 102, x1: 132, y: 36, eMax: 30, seed: 6 },
+  { x0: 98, x1: 134, y: 60, eMax: 22, seed: 7 },
+  { x0: 94, x1: 130, y: 86, eMax: 18, seed: 8 },
+  // far skyline straight ahead, small + faint via low height
+  { x0: 12, x1: 30, y: 8, eMax: 14, seed: 9 },
+  { x0: 70, x1: 88, y: 8, eMax: 15, seed: 10 },
 ];
 
-// Ambient environment (terrain + static infrastructure) is context, not the
-// subject, so it is drawn faint. Tracked-object clouds keep full opacity.
-const ENV_STRUCTURE_OPACITY = 0.3;
-const ENV_TERRAIN_OPACITY = 0.16;
+const TREES = [
+  { x: 10, y: 26 }, { x: 90, y: 24 },
+  { x: 6, y: 48 }, { x: 94, y: 46 },
+  { x: 12, y: 70 }, { x: 88, y: 72 },
+  { x: 4, y: 92 }, { x: 96, y: 90 },
+];
 
-function buildStaticCloud() {
-  const rng = mulberry32(20260906);
-  const out = [];
-  STRUCTURES.forEach((s) => fillVolume(rng, out, { ...s, opacity: ENV_STRUCTURE_OPACITY }));
-  // dense ground terrain carpet -- kept very faint so it reads as ground haze
-  fillVolume(rng, out, { x0: -28, x1: 128, y0: 6, y1: 100, eMin: 0, eMax: 0.5, count: 1200, color: "#34d399", rBase: 0.4, opacity: ENV_TERRAIN_OPACITY });
-  return out;
-}
-
-// The environment cloud is expensive (~3k points) and never changes frame to
-// frame, so memo it out of the per-frame re-render the parent triggers.
-const EnvironmentCloud = memo(function EnvironmentCloud() {
-  const cloud = useMemo(buildStaticCloud, []);
+// The environment layout is static and never changes frame to frame, so memo
+// it out of the per-frame re-render the parent triggers.
+const EnvironmentScene = memo(function EnvironmentScene() {
   return (
     <g>
-      {cloud.map((c, i) => (
-        <circle cx={c.x} cy={c.y} fill={c.color} fillOpacity={c.opacity} key={i} r={c.r} />
-      ))}
+      {BUILDINGS.map((b, i) => {
+        const left = project(b.x0, b.y);
+        const right = project(b.x1, b.y);
+        const groundY = (left.sy + right.sy) / 2;
+        const scale = (left.scale + right.scale) / 2;
+        return (
+          <BuildingFacade
+            color="#38bdf8"
+            groundY={groundY}
+            height={b.eMax * scale * HEIGHT_K}
+            key={i}
+            leftX={left.sx}
+            rightX={right.sx}
+            seed={b.seed}
+          />
+        );
+      })}
+      {TREES.map((t, i) => {
+        const p = project(t.x, t.y);
+        return <TreeSide cx={p.sx} groundY={p.sy} key={i} scale={1.4 * p.scale} />;
+      })}
     </g>
   );
 });
 
 // Per-region visual profile driven by the same semantic class the sidebar uses.
+// `model` selects which real-world shape SceneModels draws for this class.
 function objProfile(region) {
   const raw = String(region.semanticClass ?? region.objectClass ?? "").toLowerCase();
   if (region.kind === "dynamic") {
     if (/vehicle|car|truck|bus|motorcycle|bicycle/.test(raw)) {
-      return { color: "#f472b6", h: 3.2, w: 8, d: 7, count: 90, dashed: false };
+      return { color: "#f472b6", h: 3.2, w: 8, d: 7, model: "car", dashed: false };
     }
-    return { color: "#fb923c", h: 4.4, w: 3, d: 3, count: 60, dashed: false }; // pedestrian / rider
+    return { color: "#fb923c", h: 4.4, w: 3, d: 3, model: "person", dashed: false }; // pedestrian / rider
   }
-  if (region.kind === "uncertain") return { color: "#f59e0b", h: 1.6, w: 11, d: 9, count: 70, dashed: true };
+  if (region.kind === "uncertain") return { color: "#f59e0b", h: 3.2, w: 8, d: 7, model: "car", dashed: true };
   if (region.kind === "static") {
     if (/obstacle|barrier/.test(raw)) {
-      return { color: "#ef4444", h: 1.1, w: 9, d: 5, count: 90, dashed: false }; // road barrier / hazard
+      return { color: "#ef4444", h: 1.3, w: 9, d: 5, model: "barrier" }; // road barrier / hazard
     }
-    if (/structure|building|facade/.test(raw)) return { color: "#38bdf8", h: 22, w: 15, d: 13, count: 200, dashed: false };
-    return { color: "#38bdf8", h: 1.8, w: 13, d: 6, count: 70, dashed: false }; // curb / boundary
+    if (/structure|building|facade/.test(raw)) return { color: "#38bdf8", h: 22, w: 15, d: 13, model: "building" };
+    if (/vehicle|car/.test(raw)) return { color: "#38bdf8", h: 3.2, w: 8, d: 7, model: "car" }; // parked car
+    return { color: "#38bdf8", h: 1.8, w: 13, d: 6, model: "curb" }; // curb / boundary
   }
-  return { color: "#64748b", h: 0.4, w: 14, d: 14, count: 30, dashed: false }; // empty road / low value
+  return { color: "#64748b", h: 0.4, w: 14, d: 14, model: "curb" }; // empty road / low value
 }
 
 // Always show the utility engine's REAL decision for this frame. This used to
@@ -152,25 +132,6 @@ function hashId(id) {
   return h >>> 0;
 }
 
-function regionCloud(region) {
-  const profile = objProfile(region);
-  const { x: cx, y: cy } = region.currentPosition;
-  const rng = mulberry32(hashId(region.id));
-  const out = [];
-  fillVolume(rng, out, {
-    x0: cx - profile.w / 2,
-    x1: cx + profile.w / 2,
-    y0: cy - profile.d / 2,
-    y1: cy + profile.d / 2,
-    eMax: profile.h,
-    count: profile.count,
-    color: profile.color,
-    rBase: 0.58,
-    opacity: 0.9,
-  });
-  return out;
-}
-
 // Prediction corridor: dashed arrow from current -> predicted future position.
 function PredictionCorridor({ region }) {
   const a = project(region.currentPosition.x, region.currentPosition.y);
@@ -183,51 +144,60 @@ function PredictionCorridor({ region }) {
   );
 }
 
-// A tracked object: point cloud + wireframe box + FOVEAMAP-style callout label.
-function RegionMarker({ region, onSelect, selected }) {
+// Compute an object's on-screen geometry once, shared by the layout pass
+// (which needs to know every label's natural position up front) and the
+// marker itself (which needs the same numbers to actually draw).
+function regionScreenMeta(region) {
   const profile = objProfile(region);
-  const cloud = regionCloud(region);
   const p = project(region.currentPosition.x, region.currentPosition.y);
   const bw = Math.max(3.5, profile.w * p.scale * 1.5);
   const bh = Math.max(2.5, profile.h * p.scale * HEIGHT_K);
-  const boxX = p.sx - bw / 2;
   const boxTop = p.sy - bh;
-  const labelText = labelFor(region);
   const labelW = Math.max(18, region.name.length * 1.15);
-  // Keep the callout box inside the 0-100 viewBox even when the object's true
-  // screen position is near an edge (this is what was cutting "Moving
-  // Vehicle" down to "oving Vehicle"). The point cloud and wireframe box stay
-  // at the real position -- only the label is pulled back into frame, same
-  // approach AdaptiveMap.jsx already uses for its callouts.
   const labelCx = Math.min(100 - labelW / 2 - 1, Math.max(labelW / 2 + 1, p.sx));
+  return { profile, p, bw, bh, boxTop, labelW, labelCx };
+}
+
+// A tracked object: real vector model (car / person / barrier / building) +
+// a selection outline + FOVEAMAP-style callout label.
+function RegionMarker({ region, onSelect, selected, labelAnchorY }) {
+  const { profile, p, bw, bh, boxTop, labelW, labelCx } = regionScreenMeta(region);
+  const labelText = labelFor(region);
+  // labelAnchorY comes from the collision-avoidance pass in the parent --
+  // it matches boxTop unless another nearby label needed this one lifted
+  // clear of it. Everything below is positioned relative to that anchor,
+  // same as it was relative to boxTop before.
+  const anchorY = labelAnchorY ?? boxTop;
+
+  let model;
+  if (profile.model === "car") {
+    model = <CarRearModel color={profile.color} cx={p.sx} dashed={profile.dashed} groundY={p.sy} height={bh} width={bw} />;
+  } else if (profile.model === "person") {
+    model = <PersonModel color={profile.color} cx={p.sx} groundY={p.sy} height={bh} />;
+  } else if (profile.model === "barrier") {
+    model = <BarrierModel color={profile.color} cx={p.sx} groundY={p.sy} height={bh} width={bw} />;
+  } else if (profile.model === "building") {
+    model = <BuildingFacade color={profile.color} groundY={p.sy} height={bh} leftX={p.sx - bw / 2} rightX={p.sx + bw / 2} seed={hashId(region.id)} />;
+  } else {
+    model = <rect fill={profile.color} fillOpacity="0.5" height={Math.max(0.4, bh * 0.12)} rx="0.3" width={bw} x={p.sx - bw / 2} y={p.sy - bh * 0.12} />;
+  }
 
   return (
     <g className="cursor-pointer" onClick={() => onSelect(region.id)}>
-      {cloud.map((c, i) => (
-        <circle cx={c.x} cy={c.y} fill={c.color} fillOpacity={c.opacity} key={i} r={c.r} />
-      ))}
+      {model}
 
-      <rect
-        fill={profile.color}
-        fillOpacity={selected ? 0.18 : 0.08}
-        height={bh}
-        rx="1"
-        stroke={profile.color}
-        strokeOpacity={selected ? 1 : 0.8}
-        strokeWidth={selected ? 0.75 : 0.5}
-        strokeDasharray={profile.dashed ? "1.4 1.2" : undefined}
-        width={bw}
-        x={boxX}
-        y={boxTop}
-      />
+      {/* selection outline */}
+      {selected && (
+        <rect fill="none" height={bh * 1.12} rx="1" stroke={profile.color} strokeOpacity="0.9" strokeWidth="0.55" width={bw * 1.12} x={p.sx - (bw * 1.12) / 2} y={boxTop - bh * 0.12} />
+      )}
 
       {/* connector + callout box */}
-      <line stroke={profile.color} strokeOpacity="0.6" strokeWidth="0.3" x1={p.sx} x2={labelCx} y1={boxTop} y2={boxTop - 3} />
-      <rect fill="#060d15" height="5.4" rx="0.8" stroke={profile.color} strokeOpacity="0.75" strokeWidth="0.35" width={labelW} x={labelCx - labelW / 2} y={boxTop - 8.4} />
-      <text className="font-bold [paint-order:stroke] [stroke:rgba(0,0,0,0.6)] [stroke-width:0.35]" fill="#e2f5ff" fontSize="2.5" textAnchor="middle" x={labelCx} y={boxTop - 5.9}>
+      <line stroke={profile.color} strokeOpacity="0.6" strokeWidth="0.3" x1={p.sx} x2={labelCx} y1={boxTop} y2={anchorY - 3} />
+      <rect fill="#060d15" height="5.4" rx="0.8" stroke={profile.color} strokeOpacity="0.75" strokeWidth="0.35" width={labelW} x={labelCx - labelW / 2} y={anchorY - 8.4} />
+      <text className="font-bold [paint-order:stroke] [stroke:rgba(0,0,0,0.6)] [stroke-width:0.35]" fill="#e2f5ff" fontSize="2.5" textAnchor="middle" x={labelCx} y={anchorY - 5.9}>
         {region.name}
       </text>
-      <text fill={profile.color} fontSize="2.1" fontWeight="700" textAnchor="middle" x={labelCx} y={boxTop - 3.6}>
+      <text fill={profile.color} fontSize="2.1" fontWeight="700" textAnchor="middle" x={labelCx} y={anchorY - 3.6}>
         {labelText}
       </text>
     </g>
@@ -237,6 +207,17 @@ function RegionMarker({ region, onSelect, selected }) {
 export default function LiveLidarScene({ controls, regions, resetSimulation, setControls, setSelectedRegionId, time }) {
   const dynamicRegions = regions.filter((region) => region.kind === "dynamic");
   const selectableRegions = regions.filter((region) => region.kind !== "low");
+
+  // Resolve label collisions up front so two nearby objects (e.g. the
+  // pedestrian and the moving vehicle passing close together) get their
+  // callouts stacked instead of smashed on top of each other.
+  const labelAnchors = layoutLabels(
+    selectableRegions.map((region) => {
+      const meta = regionScreenMeta(region);
+      return { id: region.id, cx: meta.labelCx, w: meta.labelW + 1.5, baseY: meta.boxTop, h: 5.4 };
+    }),
+    { gap: 1, step: 6.2, maxTiers: 5 },
+  );
 
   const gridLines = [10, 20, 32, 46, 62, 80, 98];
   const roadPath = `M ${pt(26, 100)} L ${pt(46, 0)} L ${pt(54, 0)} L ${pt(74, 100)} Z`;
@@ -289,15 +270,15 @@ export default function LiveLidarScene({ controls, regions, resetSimulation, set
         {/* center dashed lane */}
         <line className="stroke-slate-100/45 [stroke-dasharray:2.4_3]" strokeWidth="0.6" x1={project(50, 0).sx} x2={project(50, 100).sx} y1={project(50, 0).sy} y2={project(50, 100).sy} />
 
-        {/* dense environment point cloud (memoized) */}
-        {controls.showLidar && <EnvironmentCloud />}
+        {/* roadside buildings + trees (memoized) */}
+        {controls.showLidar && <EnvironmentScene />}
 
         {/* predicted motion corridors */}
         {controls.showPrediction && dynamicRegions.map((region) => <PredictionCorridor key={`pred-${region.id}`} region={region} />)}
 
         {/* tracked objects (data-driven) */}
         {selectableRegions.map((region) => (
-          <RegionMarker key={region.id} onSelect={setSelectedRegionId} region={region} selected={controls.selectedRegionId === region.id} />
+          <RegionMarker key={region.id} labelAnchorY={labelAnchors[region.id]} onSelect={setSelectedRegionId} region={region} selected={controls.selectedRegionId === region.id} />
         ))}
 
         {/* our vehicle -- "you are here" (rear view) */}

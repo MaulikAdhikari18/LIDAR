@@ -1,8 +1,10 @@
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import { motion } from "framer-motion";
 import { Grid3X3, Layers3 } from "lucide-react";
 import { RESOLUTION_LEVELS } from "../data/simulationData.js";
 import { resolutionLevelFor } from "../api/liveAdapter.js";
+import { BarrierTop, BuildingTop, CarTop, PersonTop, TreeTop } from "./SceneModels.jsx";
+import { layoutLabels } from "../utils/labelLayout.js";
 
 // FOVEAMAP-style TOP VIEW: the ego sits at the bottom center, the road runs
 // up the frame toward the horizon, and every tracked region is drawn as a
@@ -13,20 +15,9 @@ import { resolutionLevelFor } from "../api/liveAdapter.js";
 const FUTURE_RADIUS = RESOLUTION_LEVELS.COARSEN.radius; // 9
 const FUTURE_STEP = 4.8;
 
-// Deterministic RNG so the roadside greenery point clouds don't shimmer.
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a = (a + 0x6d2b79f5) | 0;
-    let x = Math.imul(a ^ (a >>> 15), 1 | a);
-    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 // Per-region palette keyed on the same semantic class the sidebar uses, so the
 // top view color-matches the ego perspective view.
-function palette(region) {
+export function palette(region) {
   const raw = String(region.semanticClass ?? region.objectClass ?? "").toLowerCase();
   if (region.kind === "dynamic") {
     if (/vehicle|car|truck|bus|motorcycle|bicycle/.test(raw)) return "#f472b6"; // pink vehicle
@@ -41,6 +32,36 @@ function palette(region) {
   return "#64748b"; // low value / empty road
 }
 
+// Which real-world top-down icon to draw for a region, matching the shape
+// logic LiveLidarScene uses for the ego-perspective view.
+export function shapeFor(region) {
+  const raw = String(region.semanticClass ?? region.objectClass ?? "").toLowerCase();
+  if (region.kind === "dynamic" || region.kind === "uncertain") {
+    if (/vehicle|car|truck|bus|motorcycle|bicycle/.test(raw) || region.kind === "uncertain") {
+      return { type: "car", w: 5.5, h: 8.5 };
+    }
+    if (/person|pedestrian|rider/.test(raw)) return { type: "person", w: 2.6, h: 2.6 };
+    return { type: "dot", w: 2.5, h: 2.5 };
+  }
+  if (region.kind === "static") {
+    if (/obstacle|barrier/.test(raw)) return { type: "barrier", w: 6, h: 4 };
+    if (/structure|building|facade/.test(raw)) return { type: "building", w: 11, h: 9 };
+    if (/vehicle|car/.test(raw)) return { type: "car", w: 5, h: 7.5 };
+    return { type: "dot", w: 2, h: 2 };
+  }
+  return { type: "dot", w: 1.4, h: 1.4 };
+}
+
+export function hashRegionId(id) {
+  let h = 2166136261;
+  const str = String(id);
+  for (let i = 0; i < str.length; i += 1) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
 // Fill opacity scales with the decision so REFINE reads brightest.
 function decisionAlpha(decision) {
   if (decision === "REFINE") return { fill: 0.26, stroke: 1 };
@@ -48,7 +69,7 @@ function decisionAlpha(decision) {
   return { fill: 0.05, stroke: 0.4 };
 }
 
-function baseCells() {
+export function baseCells() {
   const cells = [];
   for (let y = 0; y < 100; y += RESOLUTION_LEVELS.COARSEN.gridStep) {
     for (let x = 0; x < 100; x += RESOLUTION_LEVELS.COARSEN.gridStep) {
@@ -118,44 +139,60 @@ function regionCells(region, predictionEnabled) {
   return cells;
 }
 
-// Roadside greenery point clouds -- ambient, deterministic, memoized so they
-// don't rebuild on every simulation frame.
-function buildGreenery() {
-  const rng = mulberry32(770411);
-  const clusters = [
-    { cx: 14, cy: 26 }, { cx: 86, cy: 30 }, { cx: 12, cy: 58 },
-    { cx: 88, cy: 62 }, { cx: 16, cy: 84 }, { cx: 84, cy: 88 },
-  ];
-  const pts = [];
-  clusters.forEach((c, ci) => {
-    for (let i = 0; i < 46; i += 1) {
-      const ang = rng() * Math.PI * 2;
-      const rad = Math.pow(rng(), 0.6) * 5.5;
-      pts.push({
-        id: `g-${ci}-${i}`,
-        x: c.cx + Math.cos(ang) * rad,
-        y: c.cy + Math.sin(ang) * rad * 0.8,
-        r: 0.55 + rng() * 0.5,
-      });
-    }
-  });
-  return pts;
-}
+// Roadside trees + background buildings -- ambient context so the top-down
+// map reads as a real street, not just a resolution grid. Static/deterministic
+// so it's memoized out of the per-frame re-render the parent triggers.
+const TREE_CLUSTERS = [
+  { cx: 14, cy: 22, r: 2.6 }, { cx: 10, cy: 30, r: 2 }, { cx: 17, cy: 32, r: 1.8 },
+  { cx: 86, cy: 26, r: 2.6 }, { cx: 90, cy: 34, r: 2 }, { cx: 83, cy: 33, r: 1.8 },
+  { cx: 12, cy: 55, r: 2.8 }, { cx: 18, cy: 61, r: 2.1 },
+  { cx: 88, cy: 58, r: 2.8 }, { cx: 82, cy: 64, r: 2.1 },
+  { cx: 15, cy: 85, r: 2.4 }, { cx: 85, cy: 88, r: 2.4 },
+];
 
-const Greenery = memo(function Greenery() {
-  const pts = useMemo(buildGreenery, []);
+const BACKDROP_BUILDINGS = [
+  { x: 2, y: 6, w: 16, h: 14 }, { x: 82, y: 6, w: 16, h: 14 },
+  { x: 1, y: 38, w: 14, h: 12 }, { x: 85, y: 40, w: 14, h: 12 },
+  { x: 3, y: 68, w: 13, h: 16 }, { x: 84, y: 70, w: 13, h: 16 },
+];
+
+export const Backdrop = memo(function Backdrop() {
   return (
     <g>
-      {pts.map((p) => (
-        <circle cx={p.x} cy={p.y} fill="#22c55e" fillOpacity="0.5" key={p.id} r={p.r} />
+      {BACKDROP_BUILDINGS.map((b, i) => (
+        <BuildingTop color="#38bdf8" h={b.h} key={`bg-b-${i}`} seed={i + 1} w={b.w} x={b.x} y={b.y} />
+      ))}
+      {TREE_CLUSTERS.map((t, i) => (
+        <TreeTop cx={t.cx} cy={t.cy} key={`bg-t-${i}`} r={t.r} />
       ))}
     </g>
   );
 });
 
-export default function AdaptiveMap({ onSelectRegion, predictionEnabled = true, regions, resolutionLevels, selectedRegionId, title = "Adaptive 2.5D Map (Top View)" }) {
+export default function AdaptiveMap({
+  onAdvanceFrame,
+  onSelectRegion,
+  predictionEnabled = true,
+  regions,
+  resolutionLevels,
+  selectedRegionId,
+  showFuturePath = false,
+  title = "Adaptive 2.5D Map (Top View)",
+}) {
   const grid = baseCells();
   const objectCells = regions.flatMap((region) => regionCells(region, predictionEnabled));
+
+  // Resolve label collisions up front so nearby objects' callouts stack
+  // instead of overlapping into unreadable smashed-together text.
+  const labelAnchors = layoutLabels(
+    regions.map((region) => {
+      const labelW = Math.max(16, region.name.length * 1.2);
+      const labelX = Math.min(88, Math.max(labelW / 2 + 1, region.currentPosition.x));
+      const naturalY = Math.max(9, region.currentPosition.y - 6.5);
+      return { id: region.id, cx: labelX, w: labelW + 1.5, baseY: naturalY, h: 5 };
+    }),
+    { gap: 1, step: 5.6, maxTiers: 5 },
+  );
 
   const [coarse, medium, fine] = resolutionLevels?.length === 3 ? resolutionLevels : [0.5, 0.2, 0.05];
   const cm = (metres) => `${Math.round(metres * 100)} cm`;
@@ -181,9 +218,16 @@ export default function AdaptiveMap({ onSelectRegion, predictionEnabled = true, 
         Top-down view from above the ego. Each box is one grid cell at its allocated resolution — bigger box = coarser
         = cheaper. Colored clusters are tracked objects; the label is that region&apos;s decision{" "}
         <span className="text-slate-400">this frame</span>. Click any cell or dot to inspect it on the right.
+        {onAdvanceFrame && (
+          <> Click any open area of the map to advance to the <span className="text-cyanSignal">next frame</span>.</>
+        )}
       </p>
 
-      <svg className="aspect-[1/0.86] w-full rounded-md border border-line bg-slate-950" viewBox="0 0 100 100">
+      <svg
+        className={`aspect-[1/0.86] w-full rounded-md border border-line bg-slate-950 ${onAdvanceFrame ? "cursor-pointer" : ""}`}
+        onClick={onAdvanceFrame}
+        viewBox="0 0 100 100"
+      >
         <defs>
           <marker id="predArrow" markerHeight="4" markerWidth="4" orient="auto" refX="2" refY="2">
             <path d="M0 0 L4 2 L0 4 Z" fill="#67e8f9" />
@@ -202,8 +246,8 @@ export default function AdaptiveMap({ onSelectRegion, predictionEnabled = true, 
           <rect className="fill-transparent stroke-slate-500/15" height={cell.size} key={cell.id} width={cell.size} x={cell.x} y={cell.y} />
         ))}
 
-        {/* ambient roadside greenery */}
-        <Greenery />
+        {/* ambient roadside buildings + trees */}
+        <Backdrop />
 
         {/* resolution cells per region */}
         {objectCells.map((cell) => (
@@ -215,7 +259,10 @@ export default function AdaptiveMap({ onSelectRegion, predictionEnabled = true, 
             height={cell.size}
             initial={{ opacity: 0.35, scale: 0.92 }}
             key={cell.id}
-            onClick={() => cell.regionId && onSelectRegion(cell.regionId)}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (cell.regionId) onSelectRegion(cell.regionId);
+            }}
             rx={cell.future ? 0.6 : 0}
             stroke={cell.color}
             strokeDasharray={cell.future ? "1.2 1" : undefined}
@@ -228,8 +275,9 @@ export default function AdaptiveMap({ onSelectRegion, predictionEnabled = true, 
           />
         ))}
 
-        {/* prediction corridor arrows */}
-        {predictionEnabled &&
+        {/* prediction corridor arrows -- single endpoint, used on pages that
+            just need a quick "where next" cue (Live System / Comparison). */}
+        {predictionEnabled && !showFuturePath &&
           regions
             .filter((region) => region.kind === "dynamic")
             .map((region) => (
@@ -247,16 +295,86 @@ export default function AdaptiveMap({ onSelectRegion, predictionEnabled = true, 
               />
             ))}
 
-        {/* region centers + FOVEAMAP-style callout labels */}
+        {/* projected multi-frame path -- the full frame-by-frame trajectory
+            (region.futureTrack, reconstructed in liveAdapter.js from this
+            frame's real velocity/heading) instead of one endpoint. Used by
+            the Prediction page so every tracked object's next ~10 frames are
+            visible on the map for whichever single frame is currently loaded. */}
+        {predictionEnabled && showFuturePath &&
+          regions
+            .filter((region) => region.kind === "dynamic" && region.futureTrack?.length)
+            .map((region) => {
+              const points = [region.currentPosition, ...region.futureTrack.map((f) => f.position)]
+                .map((p) => `${p.x},${p.y}`)
+                .join(" ");
+              const last = region.futureTrack[region.futureTrack.length - 1];
+              return (
+                <g key={`path-${region.id}`}>
+                  <polyline
+                    fill="none"
+                    markerEnd="url(#predArrow)"
+                    points={points}
+                    stroke="#67e8f9"
+                    strokeDasharray="1.6 1.2"
+                    strokeOpacity="0.85"
+                    strokeWidth="0.5"
+                  />
+                  {region.futureTrack.map((f, i) => (
+                    <circle
+                      cx={f.position.x}
+                      cy={f.position.y}
+                      fill="#67e8f9"
+                      fillOpacity={f.extrapolatedBeyondBackend ? 0.4 : 0.85}
+                      key={`pt-${region.id}-${i}`}
+                      r={i === region.futureTrack.length - 1 ? 1.1 : 0.55}
+                    />
+                  ))}
+                  <text
+                    className="font-bold [paint-order:stroke] [stroke:rgba(0,0,0,0.7)] [stroke-width:0.4]"
+                    fill="#a5f3fc"
+                    fontSize="2"
+                    textAnchor="middle"
+                    x={last.position.x}
+                    y={last.position.y - 2.2}
+                  >
+                    +{region.futureTrack.length}f
+                  </text>
+                </g>
+              );
+            })}
+
+        {/* region icons (real car / building / barrier shapes) + FOVEAMAP-style callout labels */}
         {regions.map((region) => {
           const color = palette(region);
           const { x, y } = region.currentPosition;
           const selected = selectedRegionId === region.id;
+          const shape = shapeFor(region);
           const labelW = Math.max(16, region.name.length * 1.2);
           const labelX = Math.min(88, Math.max(labelW / 2 + 1, x));
-          const labelY = Math.max(9, y - 6.5);
+          const labelY = labelAnchors[region.id] ?? Math.max(9, y - 6.5);
+
+          let icon;
+          if (shape.type === "car") {
+            icon = <CarTop color={color} cx={x} cy={y} dashed={region.kind === "uncertain"} h={shape.h} w={shape.w} />;
+          } else if (shape.type === "person") {
+            icon = <PersonTop color={color} cx={x} cy={y} r={shape.w / 2} selected={selected} />;
+          } else if (shape.type === "building") {
+            icon = <BuildingTop color={color} h={shape.h} seed={hashRegionId(region.id)} w={shape.w} x={x - shape.w / 2} y={y - shape.h / 2} />;
+          } else if (shape.type === "barrier") {
+            icon = <BarrierTop h={shape.h} w={shape.w} x={x - shape.w / 2} y={y - shape.h / 2} />;
+          } else {
+            icon = <circle cx={x} cy={y} fill={color} r={shape.w / 2} />;
+          }
+
           return (
-            <g className="cursor-pointer" key={region.id} onClick={() => onSelectRegion(region.id)}>
+            <g
+              className="cursor-pointer"
+              key={region.id}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectRegion(region.id);
+              }}
+            >
               <line stroke={color} strokeOpacity="0.5" strokeWidth="0.3" x1={x} x2={labelX} y1={y} y2={labelY + 3} />
               <rect fill="#060f18" height="5" rx="0.8" stroke={color} strokeOpacity="0.8" strokeWidth="0.35" width={labelW} x={labelX - labelW / 2} y={labelY - 2} />
               <text className="font-bold [paint-order:stroke] [stroke:rgba(0,0,0,0.6)] [stroke-width:0.35]" fill="#e6f6ff" fontSize="2.1" textAnchor="middle" x={labelX} y={labelY}>
@@ -265,7 +383,20 @@ export default function AdaptiveMap({ onSelectRegion, predictionEnabled = true, 
               <text fill={color} fontSize="1.9" fontWeight="700" textAnchor="middle" x={labelX} y={labelY + 2.1}>
                 {region.decision}
               </text>
-              <circle cx={x} cy={y} fill={color} r={selected ? 2.2 : 1.5} stroke="#e6f6ff" strokeOpacity={selected ? 0.9 : 0.4} strokeWidth={selected ? 0.5 : 0.25} />
+              {icon}
+              {selected && (
+                <rect
+                  fill="none"
+                  height={shape.h + 1.4}
+                  rx="1"
+                  stroke={color}
+                  strokeOpacity="0.9"
+                  strokeWidth="0.4"
+                  width={shape.w + 1.4}
+                  x={x - (shape.w + 1.4) / 2}
+                  y={y - (shape.h + 1.4) / 2}
+                />
+              )}
             </g>
           );
         })}

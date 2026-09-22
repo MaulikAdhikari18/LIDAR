@@ -105,6 +105,7 @@ function PlaybackControls({ controls, setControls, resetSimulation }) {
 function BackendConfiguration({ dataSource }) {
   const isLive = dataSource === "live";
   const [path, setPath] = useState("");
+  const [sequence, setSequence] = useState("00");
   const [budget, setBudget] = useState("");
   const [refineThreshold, setRefineThreshold] = useState("");
   const [status, setStatus] = useState(null);
@@ -131,10 +132,18 @@ function BackendConfiguration({ dataSource }) {
         <ConfigRow
           disabled={!isLive}
           label="Dataset path"
-          onSet={() => path && run("Dataset path", () => setDatasetPath(path))}
-          placeholder="/data/sequences/00"
+          onSet={() => path && run("Dataset path", () => setDatasetPath(path, sequence || "00"))}
+          placeholder="/data (folder containing sequences/)"
           setValue={setPath}
           value={path}
+        />
+        <ConfigRow
+          disabled={!isLive}
+          label="Sequence"
+          onSet={() => path && run("Dataset path", () => setDatasetPath(path, sequence || "00"))}
+          placeholder="00"
+          setValue={setSequence}
+          value={sequence}
         />
         <ConfigRow
           disabled={!isLive}

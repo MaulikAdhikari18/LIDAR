@@ -81,6 +81,12 @@ export default function App() {
   const [predictionMode, setPredictionMode] = useState("predictive");
 
   const [dataSource, setDataSource] = useState("simulated"); // "simulated" | "live"
+  // Live mode defaults to click-to-advance: a frame only changes when the
+  // user explicitly steps it (button or map click). Auto Play is an opt-in
+  // toggle for demos -- off by default -- that resumes the old continuous
+  // polling behavior. This is intentionally separate from controls.running,
+  // which still only drives the Simulated Demo's client-side animation loop.
+  const [autoPlay, setAutoPlay] = useState(false);
   const [liveRegions, setLiveRegions] = useState([]);
   const [liveMetrics, setLiveMetrics] = useState(null);
   const [liveHistory, setLiveHistory] = useState([]);
@@ -100,6 +106,12 @@ export default function App() {
   // Per-region hold state for applyDecisionHold; a ref (not state) because
   // it's mutated every poll and should never itself trigger a re-render.
   const decisionHoldRef = useRef(new Map());
+  // Guards against overlapping /api/frame requests (see fetchLiveFrame) and
+  // gives the UI something to show while a request is in flight, instead of
+  // a click that appears to do nothing until it eventually lands.
+  const isAdvancingRef = useRef(false);
+  const appliedFrameIdRef = useRef(-1);
+  const [isAdvancingFrame, setIsAdvancingFrame] = useState(false);
 
   useEffect(() => {
     let animationId;
@@ -178,34 +190,63 @@ export default function App() {
   // that started it was torn down (e.g. the user switched back to Simulated
   // mid-request); the manual step button has no such window to guard.
   const fetchLiveFrame = useCallback(async (isStale = () => false) => {
-    const result = await advanceFrame();
-    if (isStale()) return;
-    const { regions: rawRegions, metrics } = adaptBackendFrame(result, liveConfigRef.current ?? FALLBACK_CONFIG);
-    const regions = applyDecisionHold(rawRegions, decisionHoldRef.current);
-    setLiveRegions(regions);
-    setLiveMetrics(metrics);
-    setFrameNumber(result.frame_id);
-    setLiveError(null);
-    setLiveStatus(regions.length ? "live" : "empty");
+    // Guard against overlapping requests. /api/frame MUTATES the backend's
+    // dataset cursor on every call, so if a second request fires before the
+    // first one's response lands -- e.g. an impatient extra click, or a
+    // manual click landing mid-poll-cycle -- both advance the backend
+    // independently and can resolve out of order. That's the actual cause
+    // of "next frame takes forever": each unanswered click was queuing up
+    // its own real round trip, so what felt like one slow click was really
+    // several stacked ones before anything visibly changed. Now a second
+    // call while one is already in flight is just ignored.
+    if (isAdvancingRef.current) return;
+    isAdvancingRef.current = true;
+    setIsAdvancingFrame(true);
+    try {
+      const result = await advanceFrame();
+      if (isStale()) return;
+      // Backend frame_id only ever increases. If a response for an older
+      // frame arrives after we've already applied a newer one, drop it --
+      // otherwise the UI could visibly snap backward.
+      if (result.frame_id <= appliedFrameIdRef.current) return;
+      appliedFrameIdRef.current = result.frame_id;
+      const { regions: rawRegions, metrics } = adaptBackendFrame(result, liveConfigRef.current ?? FALLBACK_CONFIG);
+      const regions = applyDecisionHold(rawRegions, decisionHoldRef.current);
+      setLiveRegions(regions);
+      setLiveMetrics(metrics);
+      setFrameNumber(result.frame_id);
+      setLiveError(null);
+      setLiveStatus(regions.length ? "live" : "empty");
 
-    if (metrics) {
-      setLiveHistory((current) => {
-        const next = [...current, {
-          label: `${metrics.frame_id}`,
-          frameId: metrics.frame_id,
-          Fine: metrics.fine_cells ?? 0,
-          Medium: metrics.medium_cells ?? 0,
-          Coarse: metrics.coarse_cells ?? 0,
-          activeCells: metrics.active_cells ?? 0,
-          used: Number((metrics.used_budget ?? 0).toFixed(2)),
-          budget: metrics.budget ?? 0,
-        }];
-        return next.slice(-LIVE_HISTORY_LENGTH);
-      });
+      if (metrics) {
+        setLiveHistory((current) => {
+          const next = [...current, {
+            label: `${metrics.frame_id}`,
+            frameId: metrics.frame_id,
+            Fine: metrics.fine_cells ?? 0,
+            Medium: metrics.medium_cells ?? 0,
+            Coarse: metrics.coarse_cells ?? 0,
+            activeCells: metrics.active_cells ?? 0,
+            used: Number((metrics.used_budget ?? 0).toFixed(2)),
+            budget: metrics.budget ?? 0,
+          }];
+          return next.slice(-LIVE_HISTORY_LENGTH);
+        });
+      }
+    } finally {
+      isAdvancingRef.current = false;
+      setIsAdvancingFrame(false);
     }
   }, []);
 
-  // Poll the real backend, one frame at a time, while Live is selected.
+  // Poll the real backend, one frame at a time, but ONLY while Auto Play is
+  // on. By default Auto Play is off, so this effect fetches exactly one
+  // frame on entering Live mode and then stops -- every further frame
+  // requires an explicit click (the global "Next Frame" button, a page's
+  // "Step" control, or clicking the map), via stepOnce()/fetchLiveFrame()
+  // below. This used to be keyed off controls.running (the Simulated Demo's
+  // play/pause flag), which meant Live mode silently behaved like a video
+  // stream with no way to freeze on one frame.
   //
   // Chained setTimeout rather than setInterval: /api/frame MUTATES server state
   // (it advances the dataset cursor and mutates the quadtree), so overlapping
@@ -229,8 +270,8 @@ export default function App() {
       } finally {
         // Always fetch once on entry, even while paused, so selecting Live
         // shows real data instead of an indefinite "connecting" state. Only
-        // keep polling while the simulation is running.
-        if (!cancelled && controls.running) {
+        // keep auto-polling if the user has explicitly turned Auto Play on.
+        if (!cancelled && autoPlay) {
           timer = window.setTimeout(poll, LIVE_POLL_MS);
         }
       }
@@ -238,7 +279,7 @@ export default function App() {
 
     poll();
     return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
-  }, [dataSource, controls.running, fetchLiveFrame]);
+  }, [dataSource, autoPlay, fetchLiveFrame]);
 
   // Manual "Step" control (PlaybackCard): advances exactly one frame while
   // paused. In Live mode that means pulling one real frame from the backend;
@@ -264,8 +305,15 @@ export default function App() {
     setSelectedRegionId(null);
     if (dataSource === "simulated") {
       setLiveStatus("idle");
+      // Auto Play is a Live-only concept; leaving Live resets it so
+      // switching back in always starts fresh.
+      setAutoPlay(false);
     } else {
       setLiveHistory([]);
+      // Entering Live should start playing immediately rather than sitting
+      // on click-to-advance -- Auto Play defaults on as soon as the live
+      // backend is selected.
+      setAutoPlay(true);
     }
   }, [dataSource]);
 
@@ -318,6 +366,7 @@ export default function App() {
       setLiveHistory([]);
       setLiveStatus("connecting");
       decisionHoldRef.current.clear();
+      appliedFrameIdRef.current = -1; // backend's cursor goes back to 0 -- accept it again, don't treat it as stale
       resetBackend()
         .then(() => setFrameNumber(0))
         .catch((err) => { setLiveError(err.message); setLiveStatus("error"); });
@@ -339,12 +388,23 @@ export default function App() {
     setControls,
     resetSimulation,
     onStep: stepOnce,
+    isAdvancingFrame,
     predictionMode,
     setPredictionMode,
     // Live-awareness. Pages that reach for simulated data by a path other than
     // the `regions` array (Prediction's motion model, Budget Analytics'
     // headline chart) need these to respect Live mode.
     isLive,
+    // Raw mode flag (distinct from `isLive`, which also requires a live
+    // region to already exist) -- LeftControlPanel's dataset/config
+    // controls need to know "is Live Backend selected at all" so they can
+    // enable/disable themselves even before the first frame arrives.
+    dataSource,
+    // Live-only click-to-advance state. autoPlay is off by default; when off,
+    // onStep (and any onAdvanceFrame wired into a page's map) is the only
+    // thing that pulls a new frame from the backend.
+    autoPlay,
+    setAutoPlay,
     liveMetrics: isLive ? liveMetrics : null,
     liveHistory: isLive ? liveHistory : null,
     budgetTotal,
@@ -375,7 +435,7 @@ export default function App() {
             />
             <span className={liveStatus === "live" ? "text-emerald-300" : liveStatus === "error" ? "text-rose-400" : "text-amber-300"}>
               {liveStatus === "live"
-                ? `LIVE · backend frame ${frameLabel}${datasetTotalFrames && frameNumber >= datasetTotalFrames - 1 ? " · looping back to 0 next" : ""}`
+                ? `LIVE · backend frame ${frameLabel}${autoPlay ? " · auto-playing" : " · click Next Frame to advance"}${datasetTotalFrames && frameNumber >= datasetTotalFrames - 1 ? " · looping back to 0 next" : ""}`
                 : liveStatus === "error"
                   ? "LIVE · backend unreachable"
                   : liveStatus === "empty"
@@ -383,6 +443,28 @@ export default function App() {
                     : "LIVE · connecting"}
             </span>
           </span>
+        )}
+        {dataSource === "live" && (
+          <>
+            <button
+              aria-pressed={autoPlay}
+              className={`control-button ${autoPlay ? "control-button-active" : ""}`}
+              onClick={() => setAutoPlay((v) => !v)}
+              title="Auto Play resumes continuous polling. Off by default: frames only advance on click."
+              type="button"
+            >
+              Auto Play: {autoPlay ? "On" : "Off"}
+            </button>
+            <button
+              className="control-button control-button-active disabled:cursor-wait disabled:opacity-60"
+              disabled={isAdvancingFrame}
+              onClick={stepOnce}
+              title="Advance exactly one frame from the backend"
+              type="button"
+            >
+              {isAdvancingFrame ? "Advancing…" : "Next Frame ▶"}
+            </button>
+          </>
         )}
         <button
           type="button"
@@ -405,6 +487,7 @@ export default function App() {
         computeUsage={computeUsage}
         fps={fps}
         frameNumber={frameNumber}
+        objectsCount={regions.filter((r) => r.kind === "dynamic").length}
         datasetTotalFrames={datasetTotalFrames}
         onNavigate={setActivePage}
         dataSource={dataSource}

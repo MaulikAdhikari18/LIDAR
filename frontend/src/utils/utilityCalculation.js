@@ -10,13 +10,21 @@ export function wave(time, seed, amplitude = 1, frequency = 1) {
 
 export function getRegionPosition(region, time, futureSeconds = 0, demoBoost = 0) {
   const motionScale = 16 + demoBoost * 6;
+  // Sensor jitter (the wave() term) is only meaningful for objects that are
+  // actually moving. Static regions (barrier, curb, building facade) carry
+  // velocity {x:0, y:0} for exactly this reason -- they should sit at a
+  // fixed world position every frame. Applying jitter to them regardless of
+  // `kind` used to make static infrastructure visibly drift/wobble frame to
+  // frame, which reads as "moving" even though nothing in the scene model
+  // says it should.
+  const isDynamic = region.kind === "dynamic";
   const x =
     region.position.x +
-    wave(time, region.position.x, region.kind === "dynamic" ? 4.6 : 0.8, 0.55) +
+    (isDynamic ? wave(time, region.position.x, 4.6, 0.55) : 0) +
     region.velocity.x * (time + futureSeconds) * motionScale;
   const y =
     region.position.y +
-    wave(time, region.position.y, region.kind === "dynamic" ? 3.7 : 0.7, 0.5) +
+    (isDynamic ? wave(time, region.position.y, 3.7, 0.5) : 0) +
     region.velocity.y * (time + futureSeconds) * motionScale;
 
   return {

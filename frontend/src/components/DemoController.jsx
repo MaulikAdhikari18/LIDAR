@@ -1,8 +1,10 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { PlayCircle, Square } from "lucide-react";
+import { PlayCircle, Square, X } from "lucide-react";
 import { DEMO_STEPS } from "../data/simulationData.js";
 
 export default function DemoController({ controls, setControls }) {
+  const stopDemo = () => setControls((current) => ({ ...current, demoActive: false }));
+
   return (
     <>
       <button
@@ -31,9 +33,28 @@ export default function DemoController({ controls, setControls }) {
             exit={{ opacity: 0, y: 16 }}
             initial={{ opacity: 0, y: 16 }}
           >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <strong className="text-sm font-black uppercase tracking-[0.16em] text-cyan-100">Run Demo</strong>
-              <span className="text-xs font-bold text-slate-500">Step {controls.demoStep + 1}/{DEMO_STEPS.length}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-500">
+                  Step {controls.demoStep + 1}/{DEMO_STEPS.length}
+                </span>
+                {/* Explicit close control -- this box is `fixed` to the
+                    viewport corner, so it can visually sit on top of the
+                    "Stop Demo" button in the wrapped control row beneath it,
+                    leaving no obvious way to dismiss it. Always give it its
+                    own close affordance instead of relying on finding that
+                    button again. */}
+                <button
+                  aria-label="Close demo walkthrough"
+                  className="flex h-6 w-6 items-center justify-center rounded-md border border-line text-slate-400 transition hover:border-cyanSignal/60 hover:text-cyanSignal"
+                  onClick={stopDemo}
+                  title="Stop the demo walkthrough"
+                  type="button"
+                >
+                  <X size={14} />
+                </button>
+              </div>
             </div>
             <p className="mt-3 text-sm leading-6 text-slate-300">{DEMO_STEPS[controls.demoStep]}</p>
           </motion.aside>

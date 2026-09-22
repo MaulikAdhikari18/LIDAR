@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { Zap } from "lucide-react";
-import { setDatasetPath, updateConfig } from "../api/backendClient.js";
+import { getDatasetStatus, setDatasetPath, updateConfig } from "../api/backendClient.js";
 
 export default function BackendConfigCard({ dataSource }) {
   const [pathInput, setPathInput] = useState("");
+  const [sequenceInput, setSequenceInput] = useState("00");
+  const [availableSequences, setAvailableSequences] = useState([]);
   const [budgetInput, setBudgetInput] = useState("5000");
   const [note, setNote] = useState("");
   const disabled = dataSource !== "live";
@@ -11,10 +13,20 @@ export default function BackendConfigCard({ dataSource }) {
   const applyPath = async () => {
     if (!pathInput.trim()) return;
     try {
-      await setDatasetPath(pathInput.trim());
-      setNote("Dataset path set.");
+      const result = await setDatasetPath(pathInput.trim(), sequenceInput.trim() || "00");
+      setAvailableSequences(result.available_sequences ?? []);
+      setNote(`Dataset path set — sequence ${result.sequence}, ${result.frames} frames.`);
     } catch (err) {
       setNote(`Failed: ${err.message}`);
+      // even a failed set (wrong sequence) reports what sequences DO exist
+      // on disk, via the 400 response body -- pull that back in so the
+      // picker below still populates instead of staying empty.
+      try {
+        const status = await getDatasetStatus();
+        if (status.available_sequences?.length) setAvailableSequences(status.available_sequences);
+      } catch {
+        // ignore -- note above already shows the real error
+      }
     }
   };
 
@@ -49,6 +61,25 @@ export default function BackendConfigCard({ dataSource }) {
               type="text"
               value={pathInput}
             />
+            {availableSequences.length > 0 ? (
+              <select
+                className="w-20 rounded-lg border border-slate-800 bg-slate-950/80 px-1.5 py-1.5 text-xs text-slate-200 focus:border-cyan-500 focus:outline-none disabled:opacity-40"
+                disabled={disabled}
+                onChange={(e) => setSequenceInput(e.target.value)}
+                value={sequenceInput}
+              >
+                {availableSequences.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            ) : (
+              <input
+                className="w-16 rounded-lg border border-slate-800 bg-slate-950/80 px-2.5 py-1.5 text-xs text-slate-200 focus:border-cyan-500 focus:outline-none disabled:opacity-40"
+                disabled={disabled}
+                onChange={(e) => setSequenceInput(e.target.value)}
+                placeholder="seq"
+                type="text"
+                value={sequenceInput}
+              />
+            )}
             <button
               className="rounded-lg bg-blue-600/90 px-3 py-1.5 font-sans text-xs font-medium text-white transition hover:bg-blue-600 disabled:opacity-40"
               disabled={disabled}

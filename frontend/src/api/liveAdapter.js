@@ -37,9 +37,25 @@ const RESOLUTION_TIERS = [
   { maxMetres: 0.35, level: RESOLUTION_LEVELS.MAINTAIN }, // 0.20 m -> MEDIUM
 ];
 
-// Horizons (seconds ahead) the Prediction page renders as rings. Shared here so
-// the adapter samples the backend's prediction at exactly the points the UI draws.
-export const PREDICTION_HORIZONS = [0, 1, 2, 3];
+// Simulated time between frames -- mirrors backend config.FRAME_DT_SECONDS
+// (0.1s/frame). Used only to convert "N frames ahead" into the seconds-ahead
+// horizon buildFutureTrack() already works in, so a projected path point can
+// be labeled with its real future frame number.
+export const FRAME_DT_SECONDS = 0.1;
+
+// How many frames ahead the Prediction page projects each tracked object's
+// path. The backend's own PREDICTION_HORIZON_SECONDS is 2.0s (20 frames), so
+// 10 frames (1.0s) stays comfortably inside what the predictor actually
+// models -- this is not an invented extrapolation.
+export const FUTURE_FRAME_COUNT = 10;
+
+// Horizons (seconds ahead) the UI samples the constant-velocity reconstruction
+// at: frame+1 .. frame+FUTURE_FRAME_COUNT. Shared here so the adapter samples
+// the backend's prediction at exactly the points the UI draws.
+export const PREDICTION_HORIZONS = Array.from(
+  { length: FUTURE_FRAME_COUNT },
+  (_, i) => (i + 1) * FRAME_DT_SECONDS,
+);
 
 export function resolutionLevelFor(metres) {
   // Already an object (simulated mode, or a caller that pre-mapped it) -> pass through.
@@ -56,26 +72,54 @@ export function resolutionLevelFor(metres) {
   };
 }
 
-// The backend's predictor is exactly constant-velocity
-// (prediction/future_occupancy.py: x = x0 + vx*horizon, sigma =
-// prediction_sigma + uncertainty*horizon). It only reports the endpoint, so
-// re-walking that same straight line for the horizons the UI wants is an
-// exact reconstruction, not an invented interpolation.
+// CTRV (Constant Turn Rate and Velocity): same closed-form motion model as
+// backend/core/prediction.py's ctrv_offset, kept in sync with it by hand
+// since this is the one piece of prediction math duplicated client-side
+// (everywhere else, the UI reuses the backend's own computed numbers).
+// Falls back to straight-line motion when yaw_rate is negligible -- the
+// formula divides by yaw_rate, so it must not be evaluated near zero.
+const MIN_YAW_RATE_RAD_S = 1e-3;
+function ctrvOffset(heading, speed, yawRate, t) {
+  if (Math.abs(yawRate) < MIN_YAW_RATE_RAD_S) {
+    return { dx: speed * t * Math.cos(heading), dy: speed * t * Math.sin(heading) };
+  }
+  const r = speed / yawRate;
+  return {
+    dx: r * (Math.sin(heading + yawRate * t) - Math.sin(heading)),
+    dy: r * (-Math.cos(heading + yawRate * t) + Math.cos(heading)),
+  };
+}
+
+// The backend's predictor is CTRV (prediction/prediction.py: curved while a
+// track has a real turn rate, degrading to straight-line constant-velocity
+// otherwise). It reports one endpoint plus the heading/speed/yaw_rate that
+// produced it, so re-walking the SAME closed-form curve for the horizons
+// the UI wants is an exact reconstruction, not an invented interpolation.
 function buildFutureTrack(future, mapDimensions, predictionSigma, horizonsSec) {
   if (!future || !Number.isFinite(future.horizon) || future.horizon <= 0) return null;
   const h = future.horizon;
-  const vx = (future.x - future.x0) / h;
-  const vy = (future.y - future.y0) / h;
+  // Older backend responses (or the "left"/"right" fan candidates, which
+  // don't carry these) won't have heading/speed -- fall back to
+  // reverse-engineering a straight-line velocity from the single reported
+  // endpoint, exactly as before.
+  const hasKinematics = Number.isFinite(future.heading) && Number.isFinite(future.speed);
+  const heading = hasKinematics ? future.heading : Math.atan2(future.y - future.y0, future.x - future.x0);
+  const speed = hasKinematics ? future.speed : Math.hypot(future.x - future.x0, future.y - future.y0) / h;
+  const yawRate = future.yaw_rate ?? 0;
   // sigma(h) = sigma0 + growth*h, and we know sigma at h -> recover growth.
   const sigma0 = Math.min(predictionSigma, future.sigma);
   const growth = Math.max(0, (future.sigma - sigma0) / h);
 
   return horizonsSec.map((sec) => {
-    const mx = future.x0 + vx * sec;
-    const my = future.y0 + vy * sec;
+    const { dx, dy } = ctrvOffset(heading, speed, yawRate, sec);
+    const mx = future.x0 + dx;
+    const my = future.y0 + dy;
     const sigma = sigma0 + growth * sec;
     return {
       sec,
+      // Which future frame this point corresponds to (frame_id + frameOffset),
+      // e.g. frame 111's path point #5 is a projection of frame 116.
+      frameOffset: Math.round(sec / FRAME_DT_SECONDS),
       position: metersToCanvas(mx, my, mapDimensions),
       positionMeters: { x: mx, y: my },
       sigma,
@@ -153,6 +197,13 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
   for (const c of frameResult.candidates || []) {
     if (!bestCandidateByRegion.has(c.region_id)) bestCandidateByRegion.set(c.region_id, c);
   }
+  // A4: the backend's OWN final word on each region -- includes the applied
+  // decision (post-budget-check REFINE/COARSEN/MAINTAIN, not just "utility
+  // cleared the threshold"), plus the exact ig/cost/utility it used. Prefer
+  // this over bestCandidateByRegion below wherever it's present, since a
+  // candidate can clear refine_threshold and still not get applied if the
+  // budget ran out -- explanations reflects what actually happened.
+  const explanationByRegion = frameResult.explanations || {};
 
   const allRegions = frameResult.regions;
   const nearestRegion = (x, y) => {
@@ -182,9 +233,24 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
     .filter(r => r.semantic_class !== "vehicle" && r.semantic_class !== "pedestrian" && !usedRegionIds.has(r.region_id))
     .sort((a, b) => (bestCandidateByRegion.get(b.region_id)?.utility ?? 0) - (bestCandidateByRegion.get(a.region_id)?.utility ?? 0));
 
+  // Cap how many entries of the SAME semantic class can occupy the limited
+  // top-N slots -- generically, not just "road". A refined group's sibling
+  // cells are often nearly-identical copies of each other (same class,
+  // adjacent position, similar utility), which otherwise fills most of a
+  // top-8 list with e.g. three "Curb #L1_..." entries side by side instead
+  // of showing the map's actual variety. This only affects display
+  // ordering, never the backend's real allocation decisions.
+  const MAX_SLOTS_PER_CLASS = 2;
+  const classSlotsUsed = new Map();
+  const diverseRest = rest.filter((r) => {
+    const used = classSlotsUsed.get(r.semantic_class) ?? 0;
+    classSlotsUsed.set(r.semantic_class, used + 1);
+    return used < MAX_SLOTS_PER_CLASS;
+  });
+
   const dynamicSlots = Math.min(dynamicFromTracks.length, maxRegions);
   const selectedDynamic = dynamicFromTracks.slice(0, dynamicSlots);
-  const selectedStatic = rest.slice(0, maxRegions - dynamicSlots);
+  const selectedStatic = diverseRest.slice(0, maxRegions - dynamicSlots);
 
   const buildEntry = ({ track, region }, index) => {
     // A dynamic entry always has a track; region is the nearest grid cell
@@ -196,6 +262,7 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
     const vx = track?.vx ?? 0;
     const vy = track?.vy ?? 0;
     const candidate = region ? bestCandidateByRegion.get(region.region_id) : null;
+    const explanation = region ? explanationByRegion[region.region_id] : null;
     const position = metersToCanvas(x, y, mapDimensions);
     const kind = track ? "dynamic" : inferKind(region);
 
@@ -207,7 +274,7 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
     const geometricComplexity = region?.geometry ?? 0.5;
     const distanceValue = region?.distance_relevance ?? 1 / (1 + Math.hypot(x, y) / 10);
     const futureProbability = region?.future_probability ?? 0;
-    const cost = candidate?.cost ?? Math.max(region?.active_cost ?? 0.05, 0.001);
+    const cost = explanation?.refinement_cost ?? candidate?.cost ?? Math.max(region?.active_cost ?? 0.05, 0.001);
 
     // The backend only returns a `candidates` entry for a region_id when it
     // actually evaluated that cell for a resolution change this frame -- most
@@ -229,13 +296,16 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
       0.04,
       0.98,
     );
-    const ig = candidate?.ig ?? estimatedIg;
-    const usedFallbackIg = candidate?.ig == null;
-    const utility = candidate?.utility ?? ig / cost;
+    const ig = explanation?.expected_information_gain ?? candidate?.ig ?? estimatedIg;
+    const usedFallbackIg = explanation == null && candidate?.ig == null;
+    const utility = explanation?.utility ?? candidate?.utility ?? ig / cost;
 
     const refineThreshold = config?.refine_threshold ?? 0.55;
     const coarsenThreshold = config?.coarsen_threshold ?? 0.25;
-    const decision = utility >= refineThreshold ? "REFINE" : utility <= coarsenThreshold ? "COARSEN" : "MAINTAIN";
+    // Prefer the backend's own applied decision (accounts for the real
+    // budget check, not just the utility threshold) when available.
+    const decision = explanation?.decision
+      ?? (utility >= refineThreshold ? "REFINE" : utility <= coarsenThreshold ? "COARSEN" : "MAINTAIN");
 
     let futurePosition = position;
     const future = (frameResult.future || []).find(f => f.track_id === track?.track_id);
@@ -284,6 +354,13 @@ export function adaptBackendFrame(frameResult, config, maxRegions = 8) {
       // Lets the UI (RegionInspector/UtilityEngine) say "estimated" instead
       // of silently presenting an estimate as backend-measured.
       igEstimated: usedFallbackIg,
+      // A1: how many consecutive confirming observations this exact cell
+      // has accumulated -- rising while it's settled, reset to 0 by a class
+      // change or a noisy reading. See mapping/map_manager.py.
+      stableObservations: region?.stable_observations ?? 0,
+      // A2: this track's own last measured prediction error (meters) --
+      // undefined for static/non-tracked entries, since only tracks predict.
+      predictionError: track?.prediction_error,
       // Object-shaped, matching RESOLUTION_LEVELS -- see resolutionLevelFor().
       resolution: resolutionLevelFor(region?.resolution),
       // The raw backend value, for anything that wants to do real math on it.

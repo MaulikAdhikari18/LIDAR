@@ -13,6 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import BudgetReallocationFlow from "../components/BudgetReallocationFlow.jsx";
 import MetricCard from "../components/MetricCard.jsx";
 import { buildBudgetHistory } from "../utils/utilityCalculation.js";
 
@@ -91,6 +92,7 @@ export default function BudgetAnalytics({
     ];
   }, [isLive, liveMetrics, regions, coarseM, mediumM, fineM]);
 
+  const resolutionTotal = resolutionData.reduce((sum, entry) => sum + entry.value, 0);
   const savedPercent = isLive && liveMetrics ? memorySaved(liveMetrics, levels) : null;
   const refineThreshold = thresholds?.refine ?? 1.8;
 
@@ -125,7 +127,7 @@ export default function BudgetAnalytics({
                 <CartesianGrid stroke="rgba(148,163,184,0.12)" />
                 <XAxis dataKey="label" stroke="#64748b" />
                 <YAxis stroke="#64748b" />
-                <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(148,163,184,0.25)", color: "#e5eef7" }} />
+                <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(148,163,184,0.25)" }} />
                 <Area dataKey="Pedestrian" fill="#22d3ee" fillOpacity={0.25} stroke="#22d3ee" />
                 <Area dataKey="Vehicle" fill="#22c55e" fillOpacity={0.2} stroke="#22c55e" />
                 <Area dataKey="Terrain" fill="#f59e0b" fillOpacity={0.18} stroke="#f59e0b" />
@@ -167,39 +169,66 @@ export default function BudgetAnalytics({
         </div>
       </div>
 
-      <div className="panel">
+      {/* Resolution Distribution used to sit alone in the first of four
+          columns, leaving the other three empty next to it. Widened to match
+          the chart above, with a always-visible tier breakdown next to the
+          donut (not just on hover) so the box actually uses the extra width.
+          The four metric chips that used to trail the page in their own
+          near-empty row now fill the remaining two columns of this same row. */}
+      <div className="panel xl:col-span-2">
         <div className="section-title">Resolution Distribution</div>
-        <p className="mb-1 text-xs text-slate-500">
+        <p className="mb-3 text-xs text-slate-500">
           {isLive ? "Every active cell in the map, counted by the backend." : "The six demo regions, bucketed by pending decision."}
         </p>
-        <div className="h-[260px]">
-          <ResponsiveContainer height="100%" width="100%">
-            <PieChart>
-              <Pie data={resolutionData} dataKey="value" innerRadius={58} outerRadius={88} paddingAngle={3}>
-                {resolutionData.map((entry, index) => (
-                  <Cell fill={COLORS[index]} key={entry.name} />
-                ))}
-              </Pie>
-              <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(148,163,184,0.25)" }} />
-            </PieChart>
-          </ResponsiveContainer>
+        <div className="flex flex-col items-center gap-4 sm:flex-row">
+          <div className="h-[220px] w-[220px] shrink-0">
+            <ResponsiveContainer height="100%" width="100%">
+              <PieChart>
+                <Pie data={resolutionData} dataKey="value" innerRadius={54} outerRadius={82} paddingAngle={3}>
+                  {resolutionData.map((entry, index) => (
+                    <Cell fill={COLORS[index]} key={entry.name} />
+                  ))}
+                </Pie>
+                <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(148,163,184,0.25)" }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="w-full space-y-2">
+            {resolutionData.map((entry, index) => {
+              const pct = resolutionTotal > 0 ? Math.round((entry.value / resolutionTotal) * 100) : 0;
+              return (
+                <div className="flex items-center gap-2 rounded-md border border-line bg-slate-950/60 px-3 py-2" key={entry.name}>
+                  <i className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: COLORS[index] }} />
+                  <span className="flex-1 text-xs font-semibold text-slate-300">{entry.name}</span>
+                  <span className="font-mono text-sm font-bold text-slate-100">{entry.value.toLocaleString()}</span>
+                  <span className="w-10 text-right text-xs text-slate-500">{pct}%</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      <MetricCard
-        label={savedPercent === null ? "Estimated memory saved" : `Memory saved vs uniform ${cm(fineM)} grid`}
-        tone="green"
-        value={savedPercent === null ? "38%" : `${savedPercent}%`}
-      />
-      <MetricCard label="Refined regions" tone="cyan" value={regions.filter((region) => region.decision === "REFINE").length} />
-      <MetricCard label="Coarsened regions" tone="slate" value={regions.filter((region) => region.decision === "COARSEN").length} />
-      {/* The simulated and live utility scales differ by roughly 3x, so a single
-          hardcoded 1.8 marked every live region as high-utility (or none). */}
-      <MetricCard
-        label={`Regions above refine threshold (${refineThreshold})`}
-        tone="amber"
-        value={regions.filter((region) => region.utility > refineThreshold).length}
-      />
+      <div className="grid content-start grid-cols-2 gap-3 xl:col-span-2">
+        <MetricCard
+          label={savedPercent === null ? "Estimated memory saved" : `Memory saved vs uniform ${cm(fineM)} grid`}
+          tone="green"
+          value={savedPercent === null ? "38%" : `${savedPercent}%`}
+        />
+        <MetricCard label="Refined regions" tone="cyan" value={regions.filter((region) => region.decision === "REFINE").length} />
+        <MetricCard label="Coarsened regions" tone="slate" value={regions.filter((region) => region.decision === "COARSEN").length} />
+        {/* The simulated and live utility scales differ by roughly 3x, so a single
+            hardcoded 1.8 marked every live region as high-utility (or none). */}
+        <MetricCard
+          label={`Regions above refine threshold (${refineThreshold})`}
+          tone="amber"
+          value={regions.filter((region) => region.utility > refineThreshold).length}
+        />
+      </div>
+
+      <div className="xl:col-span-4">
+        <BudgetReallocationFlow regions={regions} />
+      </div>
     </section>
   );
 }

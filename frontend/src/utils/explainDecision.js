@@ -34,6 +34,8 @@ export const METRIC_HELP = {
   "Geometric complexity": "How irregular this object's shape is. Complex shapes benefit more from fine resolution.",
   "Distance value": "How much resolution matters at this range — near regions are weighted higher since they affect decisions sooner.",
   "Future occupancy": "Predicted probability this region will still be occupied a couple of seconds from now.",
+  "Confidence stability": "How many consecutive frames this exact cell has confirmed the same reading. Rises while the region is settled (lowering its utility and allowing coarsening); resets to 0 the moment its class changes or a noisy reading arrives.",
+  "Prediction error": "How far this tracked object's actual position was from where its own last forecast expected it to be. A sudden spike means the object changed direction; it decays back down as tracking re-converges.",
 };
 
 export function explainDecision(region) {

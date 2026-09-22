@@ -1,4 +1,4 @@
-import { BrainCircuit } from "lucide-react";
+import { BrainCircuit, Grid3x3 } from "lucide-react";
 import { explainDecision, METRIC_HELP } from "../utils/explainDecision.js";
 
 const factors = [
@@ -10,9 +10,58 @@ const factors = [
   ["Future occupancy", "futureProbability"],
 ];
 
-export default function UtilityEngine({ region }) {
-  // Same guard as RegionInspector -- a missing/stale region must never crash
-  // this panel, since LiveSystem.jsx renders both from the same selection.
+const RESOLUTION_TIERS = [
+  { key: "COARSEN", label: "COARSE", metresFallback: 0.5, colorClass: "border-slate-600 bg-slate-800/30 text-slate-300" },
+  { key: "MAINTAIN", label: "MEDIUM", metresFallback: 0.2, colorClass: "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" },
+  { key: "REFINE", label: "FINE", metresFallback: 0.05, colorClass: "border-cyanSignal/60 bg-cyanSignal/10 text-cyanSignal" },
+];
+
+// Frame-level resolution tier counts, folded into the bottom of this same
+// panel (rather than a separate card) so the Information Utility Engine box
+// uses the vertical space it already occupies in the Live System 3-column
+// row instead of sitting mostly empty next to the taller LiDAR/map panels.
+// Not a separate data source -- same `regions` array every other panel uses.
+function ResolutionAllocationSection({ regions, resolutionLevels }) {
+  const counts = { COARSEN: 0, MAINTAIN: 0, REFINE: 0 };
+  for (const r of regions) {
+    if (counts[r.decision] !== undefined) counts[r.decision] += 1;
+  }
+  const metresFor = (tierKey, fallback) => {
+    if (!resolutionLevels || resolutionLevels.length !== 3) return fallback;
+    const idx = tierKey === "COARSEN" ? 0 : tierKey === "MAINTAIN" ? 1 : 2;
+    return resolutionLevels[idx];
+  };
+
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.14em] text-slate-400">
+        <Grid3x3 size={14} />
+        Resolution Allocation
+      </div>
+      <p className="mb-3 text-[11px] leading-snug text-slate-500">
+        Number of tracked objects/regions currently held at each resolution tier.
+      </p>
+      <div className="grid grid-cols-3 gap-2">
+        {RESOLUTION_TIERS.map((tier) => (
+          <div className={`rounded-lg border p-3 text-center ${tier.colorClass}`} key={tier.key}>
+            <Grid3x3 className="mx-auto mb-1 opacity-70" size={16} />
+            <div className="text-2xl font-black text-white">{counts[tier.key]}</div>
+            <div className="mt-1 text-[10px] font-bold uppercase tracking-wider">{tier.label}</div>
+            <div className="text-[10px] text-slate-500">{Math.round(metresFor(tier.key, tier.metresFallback) * 100)} cm</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// `regions` / `resolutionLevels` are optional: Prediction.jsx renders this
+// panel without them and simply gets the utility breakdown on its own, same
+// as before. Live System passes both so the Resolution Allocation section
+// appears here too.
+export default function UtilityEngine({ region, regions, resolutionLevels }) {
+  const showResolution = Array.isArray(regions);
+
   if (!region) {
     return (
       <div className="panel">
@@ -21,6 +70,7 @@ export default function UtilityEngine({ region }) {
           Information Utility Engine
         </div>
         <p className="text-sm text-slate-500">No region selected. Click any cell, dot, or list item to see its utility breakdown.</p>
+        {showResolution && <ResolutionAllocationSection regions={regions} resolutionLevels={resolutionLevels} />}
       </div>
     );
   }
@@ -65,6 +115,8 @@ export default function UtilityEngine({ region }) {
       <p className="mt-3 text-xs leading-relaxed text-slate-400">
         {explainDecision(region)}
       </p>
+
+      {showResolution && <ResolutionAllocationSection regions={regions} resolutionLevels={resolutionLevels} />}
     </div>
   );
 }
